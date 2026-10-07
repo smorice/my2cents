@@ -33,6 +33,24 @@ export interface StrategyKind {
   params: Param[];
   default_rebalance: string;
   uses_benchmark: boolean;
+  family: string;
+  complexity: 1 | 2 | 3;
+  horizon: string;
+  risk_level: 1 | 2 | 3;
+  risks: string[];
+}
+
+export interface BenchmarkInfo {
+  symbol: string;
+  label: string;
+  description: string;
+  total_return: boolean;
+  currency: string;
+  kind: string;
+  first_date: string | null;
+  last_date: string | null;
+  last_synced_at: string | null;
+  available: boolean;
 }
 
 export interface Definition {

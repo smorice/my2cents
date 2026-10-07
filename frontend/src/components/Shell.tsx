@@ -15,7 +15,7 @@ const MAIN: Item[] = [
   { to: "/", label: "Tableau de bord", icon: <LayoutDashboard size={17} />, end: true },
   { to: "/strategies", label: "Stratégies", icon: <FlaskConical size={17} />, perm: "strategy:read" },
   { to: "/backtests", label: "Backtests", icon: <BarChart3 size={17} />, perm: "backtest:read" },
-  { to: "/compare", label: "Comparer", icon: <GitCompareArrows size={17} />, perm: "backtest:read" },
+  { to: "/compare", label: "Strategy Lab", icon: <GitCompareArrows size={17} />, perm: "backtest:read" },
   { to: "/portfolios", label: "Portefeuilles", icon: <Briefcase size={17} />, perm: "portfolio:read" },
   { to: "/markets", label: "Marchés", icon: <LineChart size={17} />, perm: "market:read" },
 ];

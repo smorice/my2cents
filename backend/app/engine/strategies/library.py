@@ -33,6 +33,15 @@ class BuyAndHold(Strategy):
         "à chaque échéance. C'est la référence passive contre laquelle toute stratégie active doit se mesurer."
     )
     default_rebalance = "never"
+    family = "Buy & Hold"
+    complexity = 1
+    horizon = "Long terme (10 ans et plus)"
+    risk_level = 2
+    risks = [
+        "Subit l'intégralité des baisses de marché, sans aucune protection.",
+        "Sans rééquilibrage, quelques lignes gagnantes peuvent finir par dominer le portefeuille.",
+        "Exige de tenir psychologiquement pendant les krachs.",
+    ]
     params = [
         Param("rebalance_to_equal", "Rééquilibrer vers l'équipondération", "bool", False,
               "Si activé, chaque échéance de rééquilibrage ramène chaque ligne à 1/N."),
@@ -61,6 +70,15 @@ class Momentum(Strategy):
         "Les N meilleurs sont achetés à parts égales ; les autres sont vendus. Optionnellement, seuls les actifs "
         "à momentum absolu positif sont retenus (sinon la poche reste en liquidités)."
     )
+    family = "Momentum"
+    complexity = 2
+    horizon = "Moyen terme (3 à 12 mois par position)"
+    risk_level = 3
+    risks = [
+        "Retournements brutaux (« momentum crash ») lors des rebonds de marché après une forte baisse.",
+        "Rotation fréquente : frais et fiscalité pèsent sur le résultat net.",
+        "Portefeuille concentré sur quelques titres, souvent du même secteur.",
+    ]
     params = [
         Param("lookback_days", "Fenêtre de mesure", "choice", 126, LOOKBACK_HELP, choices=LOOKBACK_CHOICES, unit="jours"),
         Param("skip_days", "Jours récents ignorés", "int", 0, "Ex. 21 pour le momentum « 12-1 ».", min=0, max=63),
@@ -112,6 +130,15 @@ class MovingAverage(Strategy):
         "oscille autour de la moyenne."
     )
     default_rebalance = "weekly"
+    family = "Moving Average"
+    complexity = 1
+    horizon = "Moyen terme"
+    risk_level = 2
+    risks = [
+        "Faux signaux répétés dans les marchés sans tendance (« whipsaws »).",
+        "Retard à l'entrée et à la sortie : une partie des hausses est manquée.",
+        "Les liquidités non investies ne rapportent rien dans la simulation.",
+    ]
     params = [
         Param("sma_period", "Période de la moyenne", "choice", 200, choices=[20, 50, 100, 150, 200], unit="jours"),
         Param("band_pct", "Marge de tolérance", "float", 1.0,
@@ -157,6 +184,14 @@ class GoldenCross(Strategy):
         "moyenne courte reste au-dessus de la longue, à poids égal dans l'univers ; sinon sa poche est en liquidités."
     )
     default_rebalance = "weekly"
+    family = "Trend Following"
+    complexity = 1
+    horizon = "Long terme (signaux rares)"
+    risk_level = 2
+    risks = [
+        "Signaux très tardifs : la baisse est souvent déjà bien entamée à la sortie.",
+        "Peu de signaux : résultats très dépendants de quelques épisodes historiques.",
+    ]
     params = [
         Param("fast", "Moyenne courte", "int", 50, min=5, max=150, unit="jours"),
         Param("slow", "Moyenne longue", "int", 200, min=20, max=300, unit="jours"),
@@ -203,6 +238,15 @@ class MeanReversion(Strategy):
         "sortie. Un filtre de tendance optionnel évite d'acheter des actifs en chute durable (cours sous la SMA 200)."
     )
     default_rebalance = "daily"
+    family = "Mean Reversion"
+    complexity = 3
+    horizon = "Court terme (jours à semaines)"
+    risk_level = 3
+    risks = [
+        "Acheter une baisse peut revenir à « attraper un couteau qui tombe » si la baisse est fondamentale.",
+        "Nombre élevé de transactions : très sensible aux frais et au slippage.",
+        "Pertes potentiellement importantes sans stop-loss.",
+    ]
     params = [
         Param("window", "Fenêtre", "int", 20, min=5, max=120, unit="jours"),
         Param("entry_z", "Seuil d'entrée (z-score)", "float", -2.0, min=-4, max=0, step=0.1),
@@ -272,6 +316,14 @@ class RelativeStrength(Strategy):
         "à condition qu'elle dépasse le seuil minimum. Contrairement au momentum pur, la stratégie reste "
         "investie dans les meilleurs relatifs même dans un marché baissier, sauf si le filtre absolu est activé."
     )
+    family = "Relative Strength"
+    complexity = 2
+    horizon = "Moyen terme"
+    risk_level = 3
+    risks = [
+        "Reste investie en marché baissier : surperformer un univers qui chute reste une perte.",
+        "Rotation sectorielle rapide et concentration du portefeuille.",
+    ]
     params = [
         Param("lookback_days", "Fenêtre de mesure", "choice", 126, LOOKBACK_HELP, choices=LOOKBACK_CHOICES, unit="jours"),
         Param("top_n", "Nombre de lignes", "int", 5, min=1, max=50),
@@ -330,6 +382,15 @@ class BenchmarkOutperformance(Strategy):
         "éligibles que de places disponibles, les plus fortes surperformances sont privilégiées."
     )
     uses_benchmark = True
+    family = "Relative Strength"
+    complexity = 2
+    horizon = "Moyen terme (semaines à mois)"
+    risk_level = 3
+    risks = [
+        "Achète ce qui a déjà monté : vulnérable aux retournements de tendance.",
+        "La comparaison dépend du choix de l'indice : un indice de prix (hors dividendes) flatte la stratégie.",
+        "Biais du survivant de l'univers CAC 40 actuel appliqué au passé.",
+    ]
     params = [
         Param("lookback_days", "Période N", "int", 63, LOOKBACK_HELP, min=5, max=504, unit="jours"),
         Param("entry_threshold_pct", "Seuil d'entrée X", "float", 5.0,
@@ -408,6 +469,14 @@ class FixedAllocation(Strategy):
         "liquidités. À chaque échéance de rééquilibrage, les lignes qui ont dérivé sont ramenées à leur cible "
         "(on vend ce qui a monté, on achète ce qui a baissé). Les actifs listés doivent faire partie de l'univers."
     )
+    family = "Buy & Hold"
+    complexity = 1
+    horizon = "Long terme"
+    risk_level = 2
+    risks = [
+        "Aucune protection en cas de baisse générale des marchés.",
+        "Les ETF en devise étrangère exposent au change (non simulé ici).",
+    ]
     params = [
         Param("weights", "Poids cibles", "weights", {"CW8.PA": 80.0, "PUST.PA": 20.0},
               "Pourcentage par symbole ; la somme doit être ≤ 100 %."),

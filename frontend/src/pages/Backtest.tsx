@@ -13,7 +13,7 @@ import type { BacktestFull, Decision, Metrics, Page, Results, Trade } from "../l
 
 type Tab = "perf" | "alloc" | "decisions" | "trades" | "contrib" | "assumptions";
 
-function Verdict({ s, b, bench }: { s: Metrics; b: Metrics; bench: string }) {
+export function Verdict({ s, b, bench }: { s: Metrics; b: Metrics; bench: string }) {
   const diff = (s.cagr ?? 0) - (b.cagr ?? 0);
   const ddBetter = (s.max_drawdown ?? 0) > (b.max_drawdown ?? 0);
   return (

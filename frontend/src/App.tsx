@@ -9,6 +9,7 @@ import { ForgotPage, LoginPage, RegisterPage, ResetPage } from "./pages/Auth";
 import { BacktestPage } from "./pages/Backtest";
 import { BacktestsPage } from "./pages/Backtests";
 import { ComparePage } from "./pages/Compare";
+import { LabPage } from "./pages/Lab";
 import { DashboardPage } from "./pages/Dashboard";
 import { MarketsPage } from "./pages/Markets";
 import { PortfolioPage, PortfoliosPage } from "./pages/Portfolios";
@@ -44,6 +45,7 @@ export function App() {
         <Route path="strategies/:id" element={<Guard perm="strategy:read"><StrategyPage /></Guard>} />
         <Route path="strategies/:id/edit" element={<Guard perm="strategy:read"><StrategyEditPage /></Guard>} />
         <Route path="backtests" element={<Guard perm="backtest:read"><BacktestsPage /></Guard>} />
+        <Route path="backtests/new" element={<Guard perm="backtest:read"><LabPage /></Guard>} />
         <Route path="backtests/:id" element={<Guard perm="backtest:read"><BacktestPage /></Guard>} />
         <Route path="compare" element={<Guard perm="backtest:read"><ComparePage /></Guard>} />
         <Route path="portfolios" element={<Guard perm="portfolio:read"><PortfoliosPage /></Guard>} />

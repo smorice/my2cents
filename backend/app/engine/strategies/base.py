@@ -121,6 +121,12 @@ class Strategy:
     params: ClassVar[list[Param]]
     default_rebalance: ClassVar[str] = "monthly"
     uses_benchmark: ClassVar[bool] = False
+    # Research metadata shown to users (no effect on the simulation)
+    family: ClassVar[str] = ""
+    complexity: ClassVar[int] = 1  # 1 simple … 3 advanced
+    horizon: ClassVar[str] = "Long terme"
+    risk_level: ClassVar[int] = 2  # 1 low … 3 high
+    risks: ClassVar[list[str]] = []
 
     def __init__(self, values: dict[str, Any] | None = None):
         values = values or {}
@@ -147,6 +153,8 @@ class Strategy:
             "params": [p.as_dict() for p in cls.params],
             "default_rebalance": cls.default_rebalance,
             "uses_benchmark": cls.uses_benchmark,
+            "family": cls.family, "complexity": cls.complexity, "horizon": cls.horizon,
+            "risk_level": cls.risk_level, "risks": cls.risks,
         }
 
 

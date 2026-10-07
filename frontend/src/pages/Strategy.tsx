@@ -1,16 +1,104 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, Copy, History, Pencil, Play, Power, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { AlertTriangle, Archive, Copy, FlaskConical, GitCompareArrows, History, Pencil, Play, Power, Trash2 } from "lucide-react";
+import { useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { BacktestForm, defaultLaunch, type LaunchConfig } from "../components/BacktestForm";
+import { EquityChart } from "../components/charts";
+import { DecisionDetail } from "../components/Explain";
 import { KindIcon } from "../components/KindIcon";
-import { Badge, Card, ErrorNote, Loading, Modal, PageHeader, toast } from "../components/ui";
+import { Badge, Card, Empty, ErrorNote, Loading, Modal, PageHeader, Stat, toast } from "../components/ui";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { dateTime, pct, ratio, tone } from "../lib/format";
-import { STATUS } from "../lib/labels";
-import { useCatalog, useNames } from "../lib/queries";
-import type { BacktestRow, Page, Strategy, Version } from "../lib/types";
+import { date, dateTime, pct, ratio, tone } from "../lib/format";
+import { ACTION, FREQ, METRIC_HELP, STATUS } from "../lib/labels";
+import { useBenchmarks, useCatalog, useNames, useUniverses } from "../lib/queries";
+import type { BacktestFull, BacktestRow, Decision, Page, Strategy, StrategyKind, Version } from "../lib/types";
+
+const LEVEL = ["", "Faible", "Moyen", "Élevé"];
+const COMPLEXITY = ["", "Simple", "Intermédiaire", "Avancée"];
+
+function Dots({ n, label }: { n: number; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1" aria-label={`${label} : ${n} sur 3`}>
+      {[1, 2, 3].map((i) => <span key={i} className={`h-1.5 w-4 rounded-full ${i <= n ? "bg-accent" : "bg-line"}`} />)}
+    </span>
+  );
+}
+
+function StrategyCard({ st, kind }: { st: Strategy; kind?: StrategyKind }) {
+  const benchmarks = useBenchmarks();
+  const universes = useUniverses();
+  const names = useNames();
+  const d = st.definition!;
+  const bench = benchmarks.data?.find((b) => b.symbol === d.benchmark)?.label ?? names[d.benchmark] ?? d.benchmark;
+  const uni = d.universe.preset ? universes.data?.find((u) => u.key === d.universe.preset)?.label ?? d.universe.preset : null;
+  const rows: [string, ReactNode][] = [
+    ["Univers", [uni, d.universe.symbols.length ? `${d.universe.symbols.length} symbole(s)` : null].filter(Boolean).join(" + ")],
+    ["Indice", bench],
+    ["Fréquence", FREQ[d.rebalance_frequency]],
+    ["Horizon", kind?.horizon],
+    ["Complexité", kind && <span className="flex items-center gap-2"><Dots n={kind.complexity} label="Complexité" />{COMPLEXITY[kind.complexity]}</span>],
+    ["Risque", kind && <span className="flex items-center gap-2"><Dots n={kind.risk_level} label="Risque" />{LEVEL[kind.risk_level]}</span>],
+  ];
+  return (
+    <Card title="Fiche">
+      <dl className="grid grid-cols-[auto_1fr] gap-x-5 gap-y-2.5 text-sm">
+        {rows.map(([k, v]) => <div key={k} className="contents"><dt className="text-muted">{k}</dt><dd className="text-ink">{v || "—"}</dd></div>)}
+      </dl>
+      {kind?.risks.length ? (
+        <div className="mt-5 border-t border-line pt-4">
+          <div className="eyebrow mb-2 flex items-center gap-1.5"><AlertTriangle size={12} className="text-warn" /> Risques</div>
+          <ul className="space-y-1.5 text-xs leading-relaxed text-ink2">{kind.risks.map((r) => <li key={r} className="flex gap-2"><span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-warn" />{r}</li>)}</ul>
+        </div>
+      ) : null}
+    </Card>
+  );
+}
+
+function LatestPerformance({ id, st }: { id: string; st: Strategy }) {
+  const q = useQuery({ queryKey: ["backtest", id], queryFn: () => api<BacktestFull>(`/backtests/${id}`) });
+  const dec = useQuery({
+    queryKey: ["decisions", id, "strategy-page"],
+    queryFn: () => api<Page<Decision>>(`/backtests/${id}/decisions`, { params: { action: "buy,sell", page_size: 8 } }),
+  });
+  const [open, setOpen] = useState<number | null>(null);
+  if (q.isLoading) return <Card title="Performance historique"><Loading /></Card>;
+  if (!q.data?.results) return null;
+  const bt = q.data, r = bt.results!;
+  const s = r.summary.strategy, b = r.summary.benchmark;
+  const bench = r.names[bt.config.benchmark] ?? bt.config.benchmark;
+  return (
+    <>
+      <Card title="Performance historique" subtitle={<>Dernier backtest : {date(r.effective_period.start)} → {date(r.effective_period.end)} · v{bt.strategy_version}{bt.strategy_version !== st.current_version && " (version antérieure)"}</>}
+        actions={<Link to={`/backtests/${bt.id}`} className="btn-ghost h-8 text-xs">Rapport complet</Link>}>
+        <div className="mb-5 grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
+          <Stat label="CAGR" value={pct(s.cagr)} valueClass={tone(s.cagr)} sub={`indice ${pct(b.cagr)}`} help={METRIC_HELP.cagr} />
+          <Stat label="Volatilité" value={pct(s.volatility)} sub={`indice ${pct(b.volatility)}`} />
+          <Stat label="Perte max." value={pct(s.max_drawdown)} sub={`indice ${pct(b.max_drawdown)}`} />
+          <Stat label="Sharpe" value={ratio(s.sharpe)} sub={`indice ${ratio(b.sharpe)}`} />
+        </div>
+        <EquityChart s={r.series} benchName={bench} height={260} />
+      </Card>
+      <Card title="Dernières décisions" subtitle="Achats et ventes décidés par la stratégie lors de ce backtest" pad={false}>
+        {dec.data?.items.length ? (
+          <ul className="divide-y divide-line border-t border-line">
+            {dec.data.items.map((d) => (
+              <li key={d.seq}>
+                <button className="flex w-full items-center gap-3 px-5 py-2.5 text-left text-sm hover:bg-raised/50 sm:px-6" aria-expanded={open === d.seq} onClick={() => setOpen(open === d.seq ? null : d.seq)}>
+                  <span className="num w-24 shrink-0 text-ink2">{date(d.date)}</span>
+                  <Badge className={ACTION[d.action].cls}>{ACTION[d.action].label}</Badge>
+                  <span className="w-36 shrink-0 truncate font-medium">{r.names[d.symbol] ?? d.symbol}</span>
+                  <span className="hidden min-w-0 flex-1 truncate text-xs text-muted md:block">{d.reason}</span>
+                </button>
+                {open === d.seq && <div className="border-t border-line bg-raised/30 p-5"><DecisionDetail bt={bt} d={d} names={r.names} /></div>}
+              </li>
+            ))}
+          </ul>
+        ) : <p className="px-6 pb-6 text-sm text-muted">Aucun achat ni vente sur ce backtest.</p>}
+      </Card>
+    </>
+  );
+}
 
 function flatten(o: unknown, prefix = ""): Record<string, string> {
   const out: Record<string, string> = {};
@@ -100,6 +188,7 @@ export function StrategyPage() {
   const kind = cat.data?.find((k) => k.kind === st.kind);
   const def = st.definition!;
   const disabled = st.status === "inactive" || st.status === "archived";
+  const lastDone = runs.data?.items.find((b) => b.status === "done");
 
   return (
     <>
@@ -109,8 +198,10 @@ export function StrategyPage() {
         description={st.description}
         actions={
           <>
+            {can("backtest:run") && !disabled && <Link to={`/backtests/new?strategy=${st.id}`} className="btn-primary"><FlaskConical size={15} /> Lancer un backtest</Link>}
             {can("strategy:create") && <button className="btn-outline" onClick={() => { setCloneName(`${st.name} (copie)`); setCloneOpen(true); }}><Copy size={15} /> Cloner</button>}
             {st.can_edit && <Link to={`/strategies/${st.id}/edit`} className="btn-outline"><Pencil size={15} /> Modifier</Link>}
+            <Link to={`/compare?strategies=${st.id}`} className="btn-outline"><GitCompareArrows size={15} /> Comparer</Link>
             {st.can_edit && st.status !== "archived" && (
               <button className="btn-ghost" onClick={() => status.mutate(st.status === "active" ? "inactive" : "active")}>
                 <Power size={15} /> {st.status === "active" ? "Désactiver" : "Activer"}
@@ -136,6 +227,11 @@ export function StrategyPage() {
       <div className="grid gap-6 xl:grid-cols-[1fr_420px]">
         <div className="space-y-6">
           {st.kind === "benchmark_outperformance" && <OutperformanceRule p={def.parameters} bench={def.benchmark} />}
+          {lastDone ? <LatestPerformance id={lastDone.id} st={st} /> : (
+            <div className="card"><Empty icon={<FlaskConical size={26} />} title="Pas encore de résultat historique"
+              action={can("backtest:run") && !disabled ? <Link to={`/backtests/new?strategy=${st.id}`} className="btn-primary"><Play size={15} /> Lancer un backtest</Link> : undefined}>
+              Lancez un backtest pour voir comment cette stratégie se serait comportée face à son indice.</Empty></div>
+          )}
           <Card title="Comment fonctionne cette stratégie">
             <p className="text-sm leading-relaxed text-ink2">{kind?.explanation}</p>
           </Card>
@@ -185,10 +281,11 @@ export function StrategyPage() {
           </Card>
         </div>
 
-        <div>
-          <div className="card sticky top-6 p-5 sm:p-6">
-            <h2 className="flex items-center gap-2 font-semibold"><Play size={16} className="text-accent" /> Lancer un backtest</h2>
-            <p className="mb-5 mt-1 text-xs text-muted">Sur la version {st.current_version}, avec les frais et le modèle de risque de la stratégie.</p>
+        <div className="space-y-6">
+          <StrategyCard st={st} kind={kind} />
+          <div className="card p-5 sm:p-6 xl:sticky xl:top-6">
+            <h2 className="flex items-center gap-2 font-semibold"><Play size={16} className="text-accent" /> Lancement rapide</h2>
+            <p className="mb-5 mt-1 text-xs text-muted">Sur la version {st.current_version}, avec l'univers, l'indice et les frais de la stratégie. <Link to={`/backtests/new?strategy=${st.id}`} className="text-accent hover:underline">Tout personnaliser dans le laboratoire</Link>.</p>
             {disabled ? (
               <p className="text-sm text-ink2">Cette stratégie est {STATUS[st.status].label.toLowerCase()} : réactivez-la pour la tester.</p>
             ) : can("backtest:run") ? (

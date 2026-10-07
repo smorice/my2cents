@@ -286,8 +286,9 @@ export function AllocationChart({ history, names, height = 260 }: { history: { d
   );
 }
 
-export function CompareChart({ items, metric, height = 340 }: { items: { id: string; label: string; dates: string[]; values: number[] }[]; metric: "twr" | "drawdown"; height?: number }) {
+export function CompareChart({ items, metric, height = 340 }: { items: { id: string; label: string; dates: string[]; values: number[]; bench?: boolean }[]; metric: "twr" | "drawdown"; height?: number }) {
   const c = useChartColors();
+  const color = (i: number) => (items[i].bench ? c["c-bench"] : c.series[i]);
   const data = useMemo(() => {
     const map = new Map<string, Record<string, number | string>>();
     items.forEach((it) => it.dates.forEach((d, i) => {
@@ -300,7 +301,7 @@ export function CompareChart({ items, metric, height = 340 }: { items: { id: str
   const fmt = (v: number) => (metric === "twr" ? v.toFixed(1).replace(".", ",") : pct(v));
   return (
     <div>
-      <div className="mb-3"><Legend items={items.map((it, i) => ({ color: c.series[i], label: it.label }))} /></div>
+      <div className="mb-3"><Legend items={items.map((it, i) => ({ color: color(i), label: it.label, dashed: it.bench }))} /></div>
       <div style={{ height }} role="img" aria-label="Comparaison des stratégies">
         <ResponsiveContainer>
           <LineChart data={data} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
@@ -310,11 +311,11 @@ export function CompareChart({ items, metric, height = 340 }: { items: { id: str
             <Tooltip cursor={{ stroke: c["c-axis"], strokeDasharray: "3 3" }} content={({ active, payload, label }) =>
               active && payload?.length ? (
                 <TipBox title={dateLabel(label)} rows={items.map((it, i) => ({
-                  color: c.series[i], label: it.label, value: payload[0].payload[it.id] == null ? "—" : fmt(payload[0].payload[it.id] as number),
+                  color: color(i), label: it.label, dashed: it.bench, value: payload[0].payload[it.id] == null ? "—" : fmt(payload[0].payload[it.id] as number),
                 }))} />
               ) : null} />
             {items.map((it, i) => (
-              <Line key={it.id} type="monotone" dataKey={it.id} stroke={c.series[i]} strokeWidth={2} dot={false} connectNulls isAnimationActive={false} />
+              <Line key={it.id} type="monotone" dataKey={it.id} stroke={color(i)} strokeWidth={it.bench ? 1.5 : 2} strokeDasharray={it.bench ? "4 3" : undefined} dot={false} connectNulls isAnimationActive={false} />
             ))}
           </LineChart>
         </ResponsiveContainer>

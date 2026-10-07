@@ -70,6 +70,9 @@ body {
   .table-base tr:last-child td { @apply border-b-0; }
 }
 
+@keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; } }
+
 /* Recharts polish */
 .recharts-cartesian-axis-tick-value { fill: var(--c-axis); font-size: 11px; }
 .recharts-surface:focus, .recharts-wrapper:focus { outline: none; }

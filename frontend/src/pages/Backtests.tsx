@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { BarChart3, GitCompareArrows } from "lucide-react";
+import { BarChart3, FlaskConical, GitCompareArrows } from "lucide-react";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Badge, Empty, Loading, PageHeader, Pagination } from "../components/ui";
@@ -24,10 +24,13 @@ export function BacktestsPage() {
     <>
       <PageHeader eyebrow="Backtests" title="Historique des simulations"
         description="Chaque backtest fige la version de stratégie et la configuration utilisées : il reste reproductible et comparable."
-        actions={<button className="btn-primary" disabled={selected.length < 1} onClick={() => nav(`/compare?ids=${selected.join(",")}`)}><GitCompareArrows size={15} /> Comparer ({selected.length})</button>} />
+        actions={<>
+          <button className="btn-outline" disabled={selected.length < 1} onClick={() => nav(`/compare?ids=${selected.join(",")}`)}><GitCompareArrows size={15} /> Comparer ({selected.length})</button>
+          <Link to="/backtests/new" className="btn-primary"><FlaskConical size={15} /> Nouveau backtest</Link>
+        </>} />
       <div className="card">
         {d.items.length === 0 ? (
-          <Empty icon={<BarChart3 size={28} />} title="Aucun backtest" action={<Link to="/strategies" className="btn-outline">Choisir une stratégie</Link>}>Lancez une simulation depuis la page d'une stratégie.</Empty>
+          <Empty icon={<BarChart3 size={28} />} title="Aucun backtest" action={<Link to="/backtests/new" className="btn-primary">Ouvrir le laboratoire</Link>}>Lancez votre première simulation depuis le laboratoire.</Empty>
         ) : (
           <div className="overflow-x-auto p-2">
             <table className="table-base">
