@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, defer
 from .. import audit, runner
 from ..db import get_db
 from ..deps import require
+from ..marketdata.service import load_panel
 from ..models import Backtest, BacktestDecision, BacktestPosition, BacktestTransaction, Job, User
 from ..rbac import Perm
 from ..schemas import BacktestIn, BacktestListOut, BatchIn
@@ -43,7 +44,7 @@ def _page(total: int, page: int, size: int, items: list, **extra) -> dict:
 
 def _decision(d: BacktestDecision) -> dict:
     return {"seq": d.seq, "date": d.date.isoformat(), "symbol": d.symbol, "action": d.action, "prev_weight": d.prev_weight,
-            "target_weight": d.target_weight, "reason": d.reason, "metrics": d.metrics}
+            "target_weight": d.target_weight, "reason": d.reason, "metrics": d.metrics, "explain": d.explain}
 
 
 def _trade(t: BacktestTransaction) -> dict:
@@ -184,6 +185,55 @@ def transactions(
     rows = db.scalars(stmt.order_by(T.date.desc(), T.seq.desc()).offset((page - 1) * page_size).limit(page_size)).all()
     symbols = db.scalars(select(T.symbol).where(T.backtest_id == bt.id).distinct().order_by(T.symbol)).all()
     return _page(total, page, page_size, [_trade(t) for t in rows], symbols=symbols)
+
+
+@router.get("/{backtest_id}/timeline")
+def timeline(backtest_id: uuid.UUID, user: User = Depends(require(Perm.BACKTEST_READ)), db: Session = Depends(get_db)):
+    """Orders grouped by execution day: what entered, what left, and how much was traded."""
+    bt = _own(db, user, backtest_id)
+    T = BacktestTransaction
+    rows = db.execute(select(T.date, T.side, T.symbol, T.value, T.decision_seq).where(T.backtest_id == bt.id).order_by(T.date, T.seq)).all()
+    days: dict[date, dict] = {}
+    for d, side, sym, value, dseq in rows:
+        x = days.setdefault(d, {"date": d.isoformat(), "buy_value": 0.0, "sell_value": 0.0, "buys": [], "sells": [], "contribution_only": True})
+        x[f"{side}_value"] += value
+        lst = x["buys" if side == "buy" else "sells"]
+        if sym not in lst:
+            lst.append(sym)
+        if dseq is not None:
+            x["contribution_only"] = False
+    return list(days.values())
+
+
+@router.get("/{backtest_id}/assets/{symbol}")
+def asset_detail(backtest_id: uuid.UUID, symbol: str, user: User = Depends(require(Perm.BACKTEST_READ)), db: Session = Depends(get_db)):
+    """One asset's story in a backtest: its price vs the benchmark, every order and every decision."""
+    bt = _own(db, user, backtest_id)
+    if bt.status != "done" or symbol not in bt.config["universe"]:
+        raise HTTPException(404, "Actif absent de ce backtest")
+    period = bt.results["effective_period"]
+    start, end = date.fromisoformat(period["start"]), date.fromisoformat(period["end"])
+    bench = bt.config["benchmark"]
+    close, _ = load_panel(db, [symbol, bench], start, end)
+    if close.empty or symbol not in close.columns:
+        raise HTTPException(404, "Pas de cours pour cet actif sur la période")
+    close = close.ffill()
+    T, D = BacktestTransaction, BacktestDecision
+    trades = [_trade(t) for t in db.scalars(select(T).where(T.backtest_id == bt.id, T.symbol == symbol).order_by(T.seq))]
+    decisions = [_decision(d) for d in db.scalars(
+        select(D).where(D.backtest_id == bt.id, D.symbol == symbol, D.action.in_(["buy", "sell", "increase", "decrease"])).order_by(D.seq))]
+
+    def r(v):
+        return None if v != v else round(float(v), 6)  # NaN -> None
+
+    return {
+        "symbol": symbol, "name": bt.results.get("names", {}).get(symbol, symbol), "benchmark": bench,
+        "dates": [d.date().isoformat() for d in close.index],
+        "price": [r(v) for v in close[symbol]],
+        "benchmark_price": [r(v) for v in close[bench]] if bench in close.columns else None,
+        "trades": trades, "decisions": decisions,
+        "realized_pnl": sum(t["realized_pnl"] or 0 for t in trades),
+    }
 
 
 @router.get("/{backtest_id}/export/{kind}.csv")

@@ -22,11 +22,22 @@ import numpy as np
 import pandas as pd
 
 from .metrics import compute_metrics, drawdown_series, monthly_returns, yearly_returns
-from .strategies.base import Context, Evaluation, Note, Strategy
+from .strategies.base import Context, Evaluation, Note, Strategy, check, explain, fact
 
 FREQ_KEYS = {"daily", "weekly", "monthly", "quarterly", "yearly", "never"}
 WEIGHT_TOLERANCE = 0.01  # absolute drift (share of portfolio) ignored when re-weighting
 RELATIVE_TOLERANCE = 0.2  # ...or 20 % of the target weight, whichever is larger
+
+
+def _finite(x: Any) -> Any:
+    """JSON-safe copy (NaN / inf become None)."""
+    if isinstance(x, float):
+        return x if math.isfinite(x) else None
+    if isinstance(x, dict):
+        return {k: _finite(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [_finite(v) for v in x]
+    return x
 
 
 def drifted(cur: float, tgt: float) -> bool:
@@ -344,6 +355,7 @@ class Backtester:
                 "date": d.date().isoformat(), "symbol": s, "action": action,
                 "prev_weight": prev, "target_weight": tgt, "reason": note.reason,
                 "metrics": {k: (None if v is None or (isinstance(v, float) and not math.isfinite(v)) else v) for k, v in note.metrics.items()},
+                "explain": _finite(note.explain),
             })
         # Skipped assets are only interesting when the portfolio actually moved.
         seqs = {}
@@ -452,6 +464,11 @@ class Backtester:
                         seqs[s] = self._add_decision({
                             "date": d.date().isoformat(), "symbol": s, "action": "sell", "prev_weight": weights.get(s, 0.0),
                             "target_weight": 0.0, "reason": reasons[s], "metrics": {"loss_from_cost": loss},
+                            "explain": explain(
+                                [fact("Prix de revient moyen de {asset}", self.pos[s].avg_cost, "num", subject="asset"),
+                                 fact("Dernier cours", float(self.close.iloc[i][s]), "num"), fact("Variation depuis l'achat", loss, emphasis=True)],
+                                [check("Stop-loss déclenché sous", loss, "<", -c.risk.stop_loss_pct / 100)],
+                            ),
                         })
                         self.targets.pop(s, None)
                     pending.append({"type": "stop", "symbols": hit, "reasons": reasons, "decision_seqs": seqs})

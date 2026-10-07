@@ -292,6 +292,8 @@ class BacktestDecision(Base):
     target_weight: Mapped[float] = mapped_column(Float)
     reason: Mapped[str] = mapped_column(Text)
     metrics: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # Structured reason: {"facts": [...], "checks": [...]} (see engine.strategies.base.Note)
+    explain: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 class BacktestTransaction(Base):

@@ -3,7 +3,8 @@ import { ChevronRight, Download, GitCompareArrows, RotateCcw, Trash2 } from "luc
 import { Fragment, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { AllocationChart, DrawdownChart, EquityChart, MonthlyHeatmap, YearlyBars } from "../components/charts";
-import { Badge, Card, ErrorNote, Help, Loading, Notice, PageHeader, Pagination, Spinner, Stat, Tabs, toast } from "../components/ui";
+import { AssetStory, DecisionDetail, TradeTimeline } from "../components/Explain";
+import { Badge, Card, ErrorNote, Help, Loading, Modal, Notice, PageHeader, Pagination, Spinner, Stat, Tabs, toast } from "../components/ui";
 import { api, exportUrl } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { date, dateTime, days, eur, num, pct, ratio, spct, tone } from "../lib/format";
@@ -52,7 +53,31 @@ function MetricsTable({ s, b }: { s: Metrics; b: Metrics }) {
   );
 }
 
-function DecisionExplorer({ id, names }: { id: string; names: Record<string, string> }) {
+function AssetButton({ symbol, names, onAsset }: { symbol: string; names: Record<string, string>; onAsset: (s: string) => void }) {
+  return (
+    <button type="button" className="group text-left" onClick={(e) => { e.stopPropagation(); onAsset(symbol); }} title="Voir l'historique de cet actif">
+      <div className="font-medium group-hover:text-accent group-hover:underline">{names[symbol] ?? symbol}</div>
+      <div className="text-xs text-muted">{symbol}</div>
+    </button>
+  );
+}
+
+function DecisionModal({ bt, seq, names, onClose }: { bt: BacktestFull; seq: number | null; names: Record<string, string>; onClose: () => void }) {
+  const q = useQuery({
+    queryKey: ["decision", bt.id, seq],
+    queryFn: () => api<Page<Decision>>(`/backtests/${bt.id}/decisions`, { params: { seq } }),
+    enabled: seq != null,
+  });
+  const d = q.data?.items[0];
+  return (
+    <Modal open={seq != null} onClose={onClose} wide title={d ? <>{ACTION[d.action].label} — {names[d.symbol] ?? d.symbol} <span className="num ml-1 text-sm font-normal text-muted">{date(d.date)}</span></> : "Décision"}>
+      {q.isLoading ? <Loading /> : q.error ? <ErrorNote error={q.error} /> : d && <DecisionDetail bt={bt} d={d} names={names} />}
+    </Modal>
+  );
+}
+
+function DecisionExplorer({ bt, names, onAsset }: { bt: BacktestFull; names: Record<string, string>; onAsset: (s: string) => void }) {
+  const id = bt.id;
   const [symbol, setSymbol] = useState("");
   const [actions, setActions] = useState<string[]>(["buy", "sell", "increase", "decrease"]);
   const [from, setFrom] = useState("");
@@ -88,22 +113,16 @@ function DecisionExplorer({ id, names }: { id: string; names: Record<string, str
               <thead><tr><th>Date</th><th>Actif</th><th>Décision</th><th className="text-right">Poids</th><th>Pourquoi</th></tr></thead>
               <tbody>
                 {q.data!.items.map((d, i) => (
-                  <Fragment key={i}>
-                    <tr className="cursor-pointer hover:bg-raised/50" onClick={() => setOpen(open === i ? null : i)}>
+                  <Fragment key={d.seq}>
+                    <tr className="cursor-pointer hover:bg-raised/50" onClick={() => setOpen(open === i ? null : i)} aria-expanded={open === i}>
                       <td className="num whitespace-nowrap text-ink2">{date(d.date)}</td>
-                      <td className="whitespace-nowrap"><div className="font-medium">{names[d.symbol] ?? d.symbol}</div><div className="text-xs text-muted">{d.symbol}</div></td>
+                      <td className="whitespace-nowrap"><AssetButton symbol={d.symbol} names={names} onAsset={onAsset} /></td>
                       <td><Badge className={ACTION[d.action].cls}>{ACTION[d.action].label}</Badge></td>
                       <td className="num whitespace-nowrap text-right">{pct(d.prev_weight)} <span className="text-muted">→</span> {pct(d.target_weight)}</td>
                       <td className="min-w-[280px] text-ink2"><span className="flex items-start gap-1"><ChevronRight size={14} className={`mt-0.5 shrink-0 text-muted transition ${open === i ? "rotate-90" : ""}`} />{d.reason}</span></td>
                     </tr>
-                    {open === i && Object.keys(d.metrics).length > 0 && (
-                      <tr><td colSpan={5} className="bg-raised/40">
-                        <div className="flex flex-wrap gap-x-6 gap-y-1 px-2 text-xs">
-                          {Object.entries(d.metrics).map(([k, v]) => (
-                            <span key={k}><span className="text-muted">{k} </span><span className="num">{v == null ? "—" : Math.abs(v) < 5 && !["rank"].includes(k) ? num(v, 4) : num(v, 2)}</span></span>
-                          ))}
-                        </div>
-                      </td></tr>
+                    {open === i && (
+                      <tr><td colSpan={5} className="bg-raised/30 !p-4 sm:!p-5"><DecisionDetail bt={bt} d={d} names={names} /></td></tr>
                     )}
                   </Fragment>
                 ))}
@@ -118,8 +137,10 @@ function DecisionExplorer({ id, names }: { id: string; names: Record<string, str
   );
 }
 
-function TradesTable({ r, id }: { r: Results; id: string }) {
+function TradesTable({ bt, r, onAsset }: { bt: BacktestFull; r: Results; onAsset: (s: string) => void }) {
+  const id = bt.id;
   const [symbol, setSymbol] = useState("");
+  const [decision, setDecision] = useState<number | null>(null);
   const [page, setPage] = useState(1);
   const q = useQuery({
     queryKey: ["transactions", id, symbol, page],
@@ -139,12 +160,12 @@ function TradesTable({ r, id }: { r: Results; id: string }) {
         <>
           <div className="overflow-x-auto">
             <table className="table-base">
-              <thead><tr><th>Date</th><th>Actif</th><th>Sens</th><th className="text-right">Quantité</th><th className="text-right">Prix</th><th className="text-right">Montant</th><th className="text-right">Frais</th><th className="text-right">P/L réalisé</th><th>Motif</th></tr></thead>
+              <thead><tr><th>Date</th><th>Actif</th><th>Sens</th><th className="text-right">Quantité</th><th className="text-right">Prix</th><th className="text-right">Montant</th><th className="text-right">Frais</th><th className="text-right">P/L réalisé</th><th>Motif</th><th><span className="sr-only">Décision</span></th></tr></thead>
               <tbody>
                 {q.data!.items.map((t) => (
                   <tr key={t.seq}>
                     <td className="num whitespace-nowrap text-ink2">{date(t.date)}</td>
-                    <td className="whitespace-nowrap font-medium">{r.names[t.symbol] ?? t.symbol}</td>
+                    <td className="whitespace-nowrap"><AssetButton symbol={t.symbol} names={r.names} onAsset={onAsset} /></td>
                     <td><Badge className={ACTION[t.side].cls}>{ACTION[t.side].label}</Badge></td>
                     <td className="num text-right">{num(t.qty, t.qty % 1 ? 3 : 0)}</td>
                     <td className="num text-right">{num(t.price)}</td>
@@ -152,6 +173,9 @@ function TradesTable({ r, id }: { r: Results; id: string }) {
                     <td className="num text-right text-ink2">{eur(t.fees + t.tax, true)}</td>
                     <td className={`num text-right ${tone(t.realized_pnl)}`}>{t.realized_pnl == null ? "—" : eur(t.realized_pnl)}</td>
                     <td className="max-w-[340px] truncate text-xs text-muted" title={t.reason}>{t.reason}</td>
+                    <td className="whitespace-nowrap text-right">
+                      {t.decision_seq != null && <button className="btn-ghost h-7 px-2 text-xs" onClick={() => setDecision(t.decision_seq)}>Pourquoi ?</button>}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -160,12 +184,14 @@ function TradesTable({ r, id }: { r: Results; id: string }) {
           <Pagination page={q.data!.page} pages={q.data!.pages} total={q.data!.total} onPage={setPage} />
         </>
       )}
+      <DecisionModal bt={bt} seq={decision} names={r.names} onClose={() => setDecision(null)} />
     </div>
   );
 }
 
 export function BacktestView({ bt }: { bt: BacktestFull }) {
   const [tab, setTab] = useState<Tab>("perf");
+  const [asset, setAsset] = useState<string | null>(null);
   const r = bt.results!;
   const s = r.summary.strategy, b = r.summary.benchmark;
   const bench = r.names[bt.config.benchmark] ?? bt.config.benchmark;
@@ -227,7 +253,12 @@ export function BacktestView({ bt }: { bt: BacktestFull }) {
                     <tbody>
                       {r.positions.map((p) => (
                         <tr key={p.symbol}>
-                          <td><div className="font-medium">{p.name}</div><div className="text-xs text-muted">{p.symbol} · {num(p.qty, p.qty % 1 ? 3 : 0)} titres</div></td>
+                          <td>
+                            <button type="button" className="group text-left" onClick={() => setAsset(p.symbol)} title="Voir l'historique de cet actif">
+                              <div className="font-medium group-hover:text-accent group-hover:underline">{p.name}</div>
+                              <div className="text-xs text-muted">{p.symbol} · {num(p.qty, p.qty % 1 ? 3 : 0)} titres</div>
+                            </button>
+                          </td>
                           <td className="num text-right">{pct(p.weight)}</td>
                           <td className="num text-right">{eur(p.value)}</td>
                           <td className="num text-right text-ink2">{num(p.avg_cost)}</td>
@@ -258,11 +289,19 @@ export function BacktestView({ bt }: { bt: BacktestFull }) {
       )}
 
       {tab === "decisions" && (
-        <Card title="Journal des décisions" subtitle="Chaque évaluation de la stratégie, actif par actif, avec la raison et les indicateurs utilisés. Cliquez une ligne pour voir les valeurs.">
-          <DecisionExplorer id={bt.id} names={r.names} />
+        <Card title="Journal des décisions" subtitle="Chaque évaluation de la stratégie, actif par actif. Ouvrez une ligne pour voir les mesures, les seuils de la règle et les ordres exécutés ; cliquez un actif pour son historique complet.">
+          <DecisionExplorer bt={bt} names={r.names} onAsset={setAsset} />
         </Card>
       )}
-      {tab === "trades" && <Card title="Transactions simulées"><TradesTable r={r} id={bt.id} /></Card>}
+      {tab === "trades" && (
+        <div className="space-y-6">
+          <Card title="Chronologie des ordres" subtitle="Montants achetés (au-dessus de zéro) et vendus (en dessous) à chaque date d'exécution">
+            <TradeTimeline id={bt.id} names={r.names} onAsset={setAsset} />
+          </Card>
+          <Card title="Transactions simulées" subtitle="« Pourquoi ? » ouvre la décision qui a déclenché l'ordre"><TradesTable bt={bt} r={r} onAsset={setAsset} /></Card>
+        </div>
+      )}
+      <AssetStory bt={bt} symbol={asset} names={r.names} onClose={() => setAsset(null)} />
       {tab === "contrib" && (
         <Card title="Historique des versements" actions={<a className="btn-ghost h-8 text-xs" href={exportUrl(bt.id, "contributions")}><Download size={14} /> CSV</a>} pad={false}>
           <div className="max-h-[560px] overflow-auto px-3 pb-3">

@@ -161,3 +161,20 @@ def test_progress_is_reported():
     seen = []
     Backtester(build("buy_and_hold", {}), config(close), close, open_, b, bo).run(progress=seen.append)
     assert seen[0] == 0 and 0.9 < seen[-1] <= 1 and seen == sorted(seen)
+
+
+@pytest.mark.parametrize("kind,params", [
+    ("buy_and_hold", {}), ("momentum", {"top_n": 1}), ("moving_average", {"sma_period": 50}), ("golden_cross", {"fast": 20, "slow": 50}),
+    ("mean_reversion", {"trend_filter": False}), ("relative_strength", {"top_n": 1}),
+    ("benchmark_outperformance", {"lookback_days": 21, "entry_threshold_pct": 1}),
+])
+def test_trade_decisions_are_explained(kind, params):
+    close, open_, b, bo = make_prices()
+    res = Backtester(build(kind, params), config(close, rebalance="weekly"), close, open_, b, bo).run()
+    traded = [d for d in res["decisions"] if d["action"] in ("buy", "sell")]
+    assert traded
+    for d in traded:
+        ex = d["explain"]
+        assert ex and (ex["facts"] or ex["checks"])
+        if d["action"] == "buy" and kind != "buy_and_hold":
+            assert all(c["passed"] for c in ex["checks"]), (d["reason"], ex)

@@ -32,6 +32,7 @@ def store_outputs(conn: Connection, backtest_id: uuid.UUID, res: dict) -> None:
         {
             "backtest_id": backtest_id, "seq": d.get("seq", k), "date": _d(d["date"]), "symbol": d["symbol"], "action": d["action"],
             "prev_weight": d["prev_weight"], "target_weight": d["target_weight"], "reason": d["reason"], "metrics": d.get("metrics") or {},
+            "explain": d.get("explain"),
         }
         for k, d in enumerate(res.get("decisions", []))
     ]

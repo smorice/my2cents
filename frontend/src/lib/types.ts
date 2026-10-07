@@ -155,8 +155,31 @@ export interface Trade {
   reason: string;
 }
 
+export interface Fact {
+  label: string;
+  value: number | null;
+  fmt: "pct" | "num" | "z" | "int";
+  subject?: "asset" | "benchmark" | "universe";
+  emphasis?: boolean;
+}
+
+export interface Check {
+  label: string;
+  passed: boolean;
+  value?: number | null;
+  op?: ">=" | ">" | "<=" | "<";
+  threshold?: number;
+  fmt?: Fact["fmt"];
+}
+
+export interface Explain {
+  facts: Fact[];
+  checks: Check[];
+}
+
 export interface Decision {
   seq: number;
+  explain: Explain | null;
   date: string;
   symbol: string;
   action: "buy" | "sell" | "increase" | "decrease" | "hold" | "skip";

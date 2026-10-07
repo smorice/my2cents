@@ -167,6 +167,17 @@ def test_strategy_versioning_and_backtest(client):
     assert d0["symbol"] == t0["symbol"] and d0["date"] < t0["date"]
     assert d0["action"] in (("buy", "increase") if t0["side"] == "buy" else ("sell", "decrease"))
     assert all(t["decision_seq"] is None for t in tx["items"] if t["reason"].startswith("Investissement du versement"))
+    # Structured explanation: asset vs benchmark, outperformance, and the threshold it had to clear.
+    ex = dec["items"][0]["explain"]
+    assert [f.get("subject") for f in ex["facts"]][:2] == ["asset", "benchmark"]
+    entry = next(c for c in ex["checks"] if c["label"].startswith("Seuil d'entrée"))
+    assert entry["passed"] and entry["threshold"] == pytest.approx(0.03) and entry["value"] >= 0.03
+    asset = client.get(f"{API}/backtests/{bid}/assets/{t0['symbol']}").json()
+    assert len(asset["dates"]) == len(asset["price"]) == len(asset["benchmark_price"]) and asset["trades"]
+    assert {d["action"] for d in asset["decisions"]} <= {"buy", "sell", "increase", "decrease"}
+    tl = client.get(f"{API}/backtests/{bid}/timeline").json()
+    assert sum(len(x["buys"]) for x in tl) >= 1 and tl == sorted(tl, key=lambda x: x["date"])
+    assert client.get(f"{API}/backtests/{bid}/assets/NOPE").status_code == 404
     assert client.get(f"{API}/backtests/{bid}/export/trades.csv").status_code == 200
     cmp_ = client.get(f"{API}/backtests/compare", params={"ids": bid}).json()
     assert cmp_[0]["series"]["twr"]

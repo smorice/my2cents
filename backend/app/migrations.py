@@ -52,6 +52,7 @@ STEPS: list[tuple[str, str | Callable[[Connection], None]]] = [
             WHERE status IN ('queued', 'running') AND job_id IS NULL;
     """),
     ("2026-10-07-normalise-results", _normalise_results),
+    ("2026-10-07-decision-explain", "ALTER TABLE backtest_decisions ADD COLUMN IF NOT EXISTS explain jsonb;"),
 ]
 
 
