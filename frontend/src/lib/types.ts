@@ -301,3 +301,126 @@ export interface AuditEvent {
   user_agent: string | null;
   hash: string;
 }
+
+// ------------------------------------------------------------------ real accounts
+
+export interface JobInfo {
+  id: string;
+  kind: string;
+  status: "queued" | "running" | "completed" | "failed";
+  progress: number;
+  message: string | null;
+  error: string | null;
+}
+
+export interface AccountPosition {
+  symbol: string;
+  name: string;
+  qty: number;
+  avg_cost: number;
+  locked: boolean;
+  price: number | null;
+  price_date: string | null;
+  value: number | null;
+  pnl: number | null;
+  pnl_pct: number | null;
+  weight: number | null;
+}
+
+export interface ProposedOrder {
+  id: string;
+  seq: number;
+  side: "buy" | "sell";
+  symbol: string;
+  qty: number;
+  price: number;
+  value: number;
+  fee_estimate: number;
+  action: "buy" | "sell" | "increase" | "decrease";
+  prev_weight: number;
+  target_weight: number;
+  reason: string;
+  explain: Explain | null;
+  status: "pending" | "executed" | "skipped";
+  resolved_at: string | null;
+}
+
+export interface Proposal {
+  id: string;
+  created_at: string;
+  as_of: string;
+  trigger: "manual" | "scheduled";
+  mode: "full" | "light";
+  status: "open" | "closed" | "superseded";
+  strategy_version: number | null;
+  value: number;
+  cash: number;
+  cash_after: number;
+  warnings: string[];
+  emailed_at: string | null;
+  names: Record<string, string>;
+  decisions: Omit<Decision, "seq" | "date">[];
+  orders: ProposedOrder[];
+}
+
+export interface Account {
+  id: string;
+  name: string;
+  strategy_id: string | null;
+  strategy_version: number | null;
+  strategy_name: string | null;
+  strategy_kind: string | null;
+  strategy_current_version: number | null;
+  rebalance: string | null;
+  rebalance_label: string | null;
+  benchmark: string | null;
+  cash: number;
+  currency: string;
+  fee_pct: number;
+  fee_min: number;
+  fractional: boolean;
+  min_order_value: number;
+  auto_review: boolean;
+  notify_email: boolean;
+  archived: boolean;
+  invested: number;
+  total: number;
+  pending_orders: number;
+  latest_proposal_at: string | null;
+  last_review_at: string | null;
+  last_full_on: string | null;
+  created_at: string;
+  updated_at: string;
+  // detail only
+  positions?: AccountPosition[];
+  latest_proposal?: Proposal | null;
+  mail_enabled?: boolean;
+  review_job?: JobInfo | null;
+  universe?: string[];
+}
+
+export interface AccountMovement {
+  id: number;
+  date: string;
+  kind: "buy" | "sell" | "deposit" | "withdrawal";
+  symbol: string | null;
+  qty: number | null;
+  price: number | null;
+  fees: number;
+  amount: number;
+  realized_pnl: number | null;
+  order_id: string | null;
+  note: string;
+}
+
+export interface ProposalRow {
+  id: string;
+  created_at: string;
+  as_of: string;
+  trigger: "manual" | "scheduled";
+  mode: "full" | "light";
+  status: "open" | "closed" | "superseded";
+  orders: number;
+  executed: number;
+  emailed_at: string | null;
+}

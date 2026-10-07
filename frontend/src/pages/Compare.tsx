@@ -13,23 +13,24 @@ import { useBenchmarks, useNames, useStrategies } from "../lib/queries";
 import type { BacktestRow, Metrics, Page } from "../lib/types";
 
 interface CmpItem {
-  id: string; name: string; strategy_name: string; strategy_version: number; config: BacktestRow["config"];
+  id: string; name: string; strategy_id: string; strategy_name: string; strategy_version: number; config: BacktestRow["config"];
   summary: { strategy: Metrics; benchmark: Metrics };
   series: { dates: string[]; twr: number[]; benchmark_twr: number[]; drawdown: number[] };
 }
 
-type Col = { key: string; label: string; get: (s: Metrics, b: Metrics) => number | null | undefined; fmt: (v?: number | null) => string; better: "high" | "low" | null; bench?: boolean; help?: string };
+type Col = { key: string; label: string; main?: boolean; get: (s: Metrics, b: Metrics) => number | null | undefined; fmt: (v?: number | null) => string; better: "high" | "low" | null; bench?: boolean; help?: string };
 
 // Rows are strategies (as in a research desk); "better" drives the highlight of the best value per column.
+// `main` columns answer "which one would have done best, and how bad did it get"; the rest is one click away.
 const COLS: Col[] = [
-  { key: "hundred", label: "100 € deviennent", get: (s) => (s.total_return == null ? null : 100 * (1 + s.total_return)), fmt: (v) => (v == null ? "—" : `${num(v, 0)} €`), better: "high", bench: true },
-  { key: "cagr", label: "CAGR", get: (s) => s.cagr, fmt: pct, better: "high", bench: true, help: METRIC_HELP.cagr },
+  { key: "hundred", main: true, label: "100 € deviennent", get: (s) => (s.total_return == null ? null : 100 * (1 + s.total_return)), fmt: (v) => (v == null ? "—" : `${num(v, 0)} €`), better: "high", bench: true },
+  { key: "cagr", main: true, label: "Gain par an", get: (s) => s.cagr, fmt: pct, better: "high", bench: true, help: METRIC_HELP.cagr },
   { key: "volatility", label: "Volatilité", get: (s) => s.volatility, fmt: pct, better: "low", bench: true, help: METRIC_HELP.volatility },
-  { key: "max_drawdown", label: "Perte max.", get: (s) => s.max_drawdown, fmt: pct, better: "high", bench: true, help: METRIC_HELP.max_drawdown },
+  { key: "max_drawdown", main: true, label: "Pire baisse", get: (s) => s.max_drawdown, fmt: pct, better: "high", bench: true, help: METRIC_HELP.max_drawdown },
   { key: "sharpe", label: "Sharpe", get: (s) => s.sharpe, fmt: ratio, better: "high", bench: true, help: METRIC_HELP.sharpe },
   { key: "sortino", label: "Sortino", get: (s) => s.sortino, fmt: ratio, better: "high", bench: true, help: METRIC_HELP.sortino },
   { key: "calmar", label: "Calmar", get: (s) => s.calmar, fmt: ratio, better: "high", bench: true, help: METRIC_HELP.calmar },
-  { key: "vs", label: "vs indice", get: (s, b) => (s.cagr == null || b.cagr == null ? null : s.cagr - b.cagr), fmt: spct, better: "high", help: "Écart de CAGR annuel avec l'indice de référence du backtest." },
+  { key: "vs", main: true, label: "vs indice", get: (s, b) => (s.cagr == null || b.cagr == null ? null : s.cagr - b.cagr), fmt: spct, better: "high", help: "Écart de CAGR annuel avec l'indice de référence du backtest." },
   { key: "alpha", label: "Alpha", get: (s) => s.alpha, fmt: spct, better: "high", help: METRIC_HELP.alpha },
   { key: "trades", label: "Ordres", get: (s) => s.trades, fmt: (v) => (v == null ? "—" : String(v)), better: null },
 ];
@@ -41,7 +42,9 @@ export function ComparePage() {
   const qc = useQueryClient();
   const [metric, setMetric] = useState<"twr" | "drawdown">("twr");
   const [picked, setPicked] = useState<string[]>(() => (params.get("strategies") ?? "").split(",").filter(Boolean));
-  const [sort, setSort] = useState<{ key: string; dir: 1 | -1 }>({ key: "cagr", dir: -1 });
+  const [sort, setSort] = useState<{ key: string; dir: 1 | -1 }>({ key: "hundred", dir: -1 });
+  const [allCols, setAllCols] = useState(false);
+  const cols = allCols ? COLS : COLS.filter((c) => c.main);
   const names = useNames();
   const benchmarks = useBenchmarks();
   const [bench, setBench] = useState("");
@@ -84,8 +87,8 @@ export function ComparePage() {
 
   return (
     <>
-      <PageHeader eyebrow="Comparer" title="Strategy Lab"
-        description="Toutes les stratégies démarrent à 100 € : lancez-les avec exactement la même configuration pour une comparaison équitable, ou superposez des backtests existants." />
+      <PageHeader eyebrow="Comparer" title="Comparer des stratégies"
+        description="Choisissez plusieurs stratégies : elles sont simulées sur la même période, avec le même argent et les mêmes frais. Vous voyez ensuite laquelle aurait le mieux réussi, et la pire baisse traversée." />
 
       <div className="mb-6 grid gap-6 xl:grid-cols-2">
         <Card title="Lancer une comparaison équitable" subtitle="Mêmes dates, même capital, mêmes versements, même fiscalité">
@@ -113,7 +116,7 @@ export function ComparePage() {
             </form>
           ) : <p className="text-sm text-muted">Permission requise pour lancer des backtests.</p>}
         </Card>
-        <Card title="Ou choisir des backtests existants">
+        <Card title="Ou reprendre des résultats déjà calculés">
           <div className="max-h-[420px] space-y-1 overflow-y-auto">
             {list.data?.items.map((b) => (
               <label key={b.id} className="flex cursor-pointer items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-raised">
@@ -143,13 +146,14 @@ export function ComparePage() {
               ...(metric === "twr" && items[0] && sameBench ? [{ id: "bench", label: benchName, dates: items[0].series.dates, values: items[0].series.benchmark_twr, bench: true }] : []),
             ]} />
           </Card>
-          <Card title="Classement" subtitle="Cliquez un en-tête pour trier. En violet : la meilleure valeur de la colonne." pad={false}>
+          <Card title="Classement" subtitle="Cliquez un en-tête pour trier. En couleur : la meilleure valeur de la colonne." pad={false}
+            actions={<button type="button" className="btn-ghost h-9" aria-pressed={allCols} onClick={() => setAllCols(!allCols)}>{allCols ? "Indicateurs essentiels" : "Tous les indicateurs"}</button>}>
             <div tabIndex={0} className="overflow-x-auto px-3 pb-3">
               <table className="table-base">
                 <thead>
                   <tr>
                     <th>Stratégie</th>
-                    {COLS.map((c) => (
+                    {cols.map((c) => (
                       <th key={c.key} className="text-right">
                         <button type="button" className="inline-flex items-center gap-1 uppercase hover:text-ink" onClick={() => setSort((x) => ({ key: c.key, dir: x.key === c.key ? (-x.dir as 1 | -1) : -1 }))}
                           aria-sort={sort.key === c.key ? (sort.dir === 1 ? "ascending" : "descending") : undefined}>
@@ -168,9 +172,12 @@ export function ComparePage() {
                           <Link to={`/backtests/${i.id}`} className="font-medium hover:text-accent">{i.strategy_name}</Link>
                           <button onClick={() => setIds(ids.filter((x) => x !== i.id))} aria-label={`Retirer ${i.strategy_name}`} className="text-muted hover:text-ink"><X size={12} /></button>
                         </div>
+                        {can("portfolio:write") && (
+                          <Link to={`/accounts?follow=${i.strategy_id}`} className="text-xs text-accent hover:underline">Suivre sur un compte réel →</Link>
+                        )}
                         <div className="num text-xs text-muted">v{i.strategy_version} · {i.config.start.slice(0, 4)}–{i.config.end.slice(0, 4)}</div>
                       </td>
-                      {COLS.map((c) => {
+                      {cols.map((c) => {
                         const v = c.get(i.summary.strategy, i.summary.benchmark);
                         const top = best(c);
                         return <td key={c.key} className={`num text-right ${top != null && v === top ? "font-semibold text-accent" : c.key === "vs" ? tone(v) : ""}`}>{c.fmt(v)}</td>;
@@ -180,7 +187,7 @@ export function ComparePage() {
                   {items[0] && sameBench && (
                     <tr className="bg-raised/50">
                       <td><div className="font-medium text-ink2">{benchName}</div><div className="text-xs text-muted">Indice de référence, mêmes versements</div></td>
-                      {COLS.map((c) => <td key={c.key} className="num text-right text-muted">{c.bench ? c.fmt(c.get(items[0].summary.benchmark, items[0].summary.benchmark)) : "—"}</td>)}
+                      {cols.map((c) => <td key={c.key} className="num text-right text-muted">{c.bench ? c.fmt(c.get(items[0].summary.benchmark, items[0].summary.benchmark)) : "—"}</td>)}
                     </tr>
                   )}
                 </tbody>

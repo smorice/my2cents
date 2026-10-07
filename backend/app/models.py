@@ -428,3 +428,115 @@ class SchemaMigration(Base):
 
     id: Mapped[str] = mapped_column(String(80), primary_key=True)
     applied_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# ---------------------------------------------------------------------------
+# Real accounts: what the user actually holds, and the orders a strategy proposes
+# ---------------------------------------------------------------------------
+
+
+class RealAccount(Base):
+    __tablename__ = "real_accounts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
+    owner_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    strategy_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("strategies.id"), nullable=True)
+    strategy_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cash: Mapped[float] = mapped_column(Float, default=0.0)
+    currency: Mapped[str] = mapped_column(String(8), default="EUR")
+    # Broker costs used to size orders; whole shares unless the broker allows fractions.
+    fee_pct: Mapped[float] = mapped_column(Float, default=0.1)
+    fee_min: Mapped[float] = mapped_column(Float, default=0.0)
+    fractional: Mapped[bool] = mapped_column(Boolean, default=False)
+    min_order_value: Mapped[float] = mapped_column(Float, default=50.0)
+    # Evening review by the worker, and an email when it finds orders to place.
+    auto_review: Mapped[bool] = mapped_column(Boolean, default=True)
+    notify_email: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Strategy memory between reviews (as in a backtest) and the last full evaluation.
+    strategy_state: Mapped[dict] = mapped_column(JSONB, default=dict)
+    last_targets: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    last_full_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    last_review_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    strategy: Mapped[Strategy | None] = relationship(lazy="joined")
+
+
+class RealPosition(Base):
+    __tablename__ = "real_positions"
+
+    account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("real_accounts.id", ondelete="CASCADE"), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(24), primary_key=True)
+    qty: Mapped[float] = mapped_column(Float)
+    avg_cost: Mapped[float] = mapped_column(Float, default=0.0)  # per share, fees included
+    # Held outside the strategy: never traded by proposals.
+    locked: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class OrderProposal(Base):
+    __tablename__ = "order_proposals"
+    __table_args__ = (Index("ix_order_proposals_account_created", "account_id", "created_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
+    account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("real_accounts.id", ondelete="CASCADE"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    as_of: Mapped[date] = mapped_column(Date)  # market day whose close was used
+    trigger: Mapped[str] = mapped_column(String(12))  # manual | scheduled
+    mode: Mapped[str] = mapped_column(String(8))  # full | light
+    # open | closed (every order executed or skipped) | superseded (a newer proposal replaced it)
+    status: Mapped[str] = mapped_column(String(12), default="open")
+    strategy_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    strategy_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    value: Mapped[float] = mapped_column(Float)
+    cash: Mapped[float] = mapped_column(Float)
+    cash_after: Mapped[float] = mapped_column(Float)
+    decisions: Mapped[list] = mapped_column(JSONB, default=list)
+    warnings: Mapped[list] = mapped_column(JSONB, default=list)
+    emailed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    orders: Mapped[list["ProposedOrder"]] = relationship(order_by="ProposedOrder.seq", lazy="selectin", cascade="all, delete-orphan")
+
+
+class ProposedOrder(Base):
+    __tablename__ = "proposed_orders"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
+    proposal_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("order_proposals.id", ondelete="CASCADE"), index=True)
+    seq: Mapped[int] = mapped_column(Integer)
+    side: Mapped[str] = mapped_column(String(4))  # buy | sell
+    symbol: Mapped[str] = mapped_column(String(24))
+    qty: Mapped[float] = mapped_column(Float)
+    price: Mapped[float] = mapped_column(Float)  # indicative: last close
+    value: Mapped[float] = mapped_column(Float)
+    fee_estimate: Mapped[float] = mapped_column(Float)
+    action: Mapped[str] = mapped_column(String(12))  # buy | sell | increase | decrease
+    prev_weight: Mapped[float] = mapped_column(Float)
+    target_weight: Mapped[float] = mapped_column(Float)
+    reason: Mapped[str] = mapped_column(Text)
+    explain: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    status: Mapped[str] = mapped_column(String(10), default="pending")  # pending | executed | skipped
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AccountMovement(Base):
+    """Ledger of the real account: fills recorded by the user, deposits, withdrawals."""
+
+    __tablename__ = "account_movements"
+    __table_args__ = (Index("ix_account_movements_account_date", "account_id", "date"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    account_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("real_accounts.id", ondelete="CASCADE"))
+    date: Mapped[date] = mapped_column(Date)
+    kind: Mapped[str] = mapped_column(String(12))  # buy | sell | deposit | withdrawal
+    symbol: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    qty: Mapped[float | None] = mapped_column(Float, nullable=True)
+    price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fees: Mapped[float] = mapped_column(Float, default=0.0)
+    amount: Mapped[float] = mapped_column(Float)  # signed cash impact
+    realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    order_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

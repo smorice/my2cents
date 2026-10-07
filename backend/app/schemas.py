@@ -314,3 +314,73 @@ class PortfolioPatch(BaseModel):
 
 class InstrumentIn(BaseModel):
     symbol: str = Field(min_length=1, max_length=24)
+
+
+# ----------------------------------------------------------------- real accounts
+
+
+class AccountIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    strategy_id: uuid.UUID | None = None
+    strategy_version: int | None = None
+    cash: float = Field(0, ge=0, le=1_000_000_000)
+    fee_pct: float = Field(0.1, ge=0, le=5)
+    fee_min: float = Field(0, ge=0, le=100)
+    fractional: bool = False
+    min_order_value: float = Field(50, ge=0, le=1_000_000)
+    auto_review: bool = True
+    notify_email: bool = True
+
+
+class AccountPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    strategy_id: uuid.UUID | None = None
+    strategy_version: int | None = None
+    cash: float | None = Field(default=None, ge=0, le=1_000_000_000)
+    fee_pct: float | None = Field(default=None, ge=0, le=5)
+    fee_min: float | None = Field(default=None, ge=0, le=100)
+    fractional: bool | None = None
+    min_order_value: float | None = Field(default=None, ge=0, le=1_000_000)
+    auto_review: bool | None = None
+    notify_email: bool | None = None
+    archived: bool | None = None
+
+
+class PositionIn(BaseModel):
+    symbol: str = Field(min_length=1, max_length=24)
+    qty: float = Field(gt=0, le=1_000_000_000)
+    avg_cost: float = Field(0, ge=0, le=1_000_000_000)
+    locked: bool = False
+
+    @field_validator("symbol")
+    @classmethod
+    def _upper(cls, v: str) -> str:
+        return v.strip().upper()
+
+
+class MovementIn(BaseModel):
+    kind: Literal["buy", "sell", "deposit", "withdrawal"]
+    date: date
+    symbol: str | None = Field(default=None, max_length=24)
+    qty: float | None = Field(default=None, gt=0, le=1_000_000_000)
+    price: float | None = Field(default=None, gt=0, le=1_000_000_000)
+    fees: float = Field(0, ge=0, le=1_000_000)
+    amount: float | None = Field(default=None, gt=0, le=1_000_000_000)  # deposits / withdrawals
+    note: str = Field(default="", max_length=500)
+
+    @model_validator(mode="after")
+    def _shape(self) -> "MovementIn":
+        if self.kind in ("buy", "sell"):
+            if not (self.symbol and self.qty and self.price):
+                raise ValueError("Un achat ou une vente demande un titre, une quantité et un prix.")
+            self.symbol = self.symbol.strip().upper()
+        elif not self.amount:
+            raise ValueError("Indiquez le montant du versement ou du retrait.")
+        return self
+
+
+class FillIn(BaseModel):
+    qty: float = Field(gt=0, le=1_000_000_000)
+    price: float = Field(gt=0, le=1_000_000_000)
+    fees: float = Field(0, ge=0, le=1_000_000)
+    date: date

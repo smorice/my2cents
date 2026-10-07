@@ -38,6 +38,8 @@ class Settings(BaseSettings):
 
     # Market data
     market_data_refresh_hours: int = 12
+    # Weekday evening review of real accounts (UTC hour, after the US close)
+    review_hour_utc: int = 22
 
     static_dir: str = "/app/static"
 

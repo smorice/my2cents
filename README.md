@@ -61,6 +61,16 @@ utilisateurs, rôles, journal d'audit.
 Chaque décision simulée porte une explication structurée (mesures, seuils de la règle, verdict) et chaque
 transaction référence la décision qui l'a déclenchée.
 
+## Comptes réels et ordres à passer
+
+Un compte réel (`/accounts`) décrit ce que l'utilisateur détient vraiment : liquidités, titres (quantité, prix de revient), frais du courtier. Il suit une stratégie, et une revue en déduit les ordres à passer :
+
+- **Même logique que le backtest** (`app/engine/live.py`) : évaluation de la stratégie sur les derniers cours, contraintes de risque, tolérance de dérive, ventes avant achats, frais estimés, quantités entières sauf si le courtier accepte les fractions, ordres sous le montant minimum ignorés.
+- **Revue complète** au premier jour de bourse de chaque période de rééquilibrage (ou à la demande) ; sinon **contrôle** : stop-loss et investissement des liquidités vers les derniers poids cibles.
+- **Revue automatique** chaque soir de semaine (`MY2CENTS_REVIEW_HOUR_UTC`, 22 h par défaut, après la clôture américaine), avec un email si des ordres sont à passer (nécessite `MY2CENTS_SMTP_HOST`).
+- Les lignes « hors stratégie » ne sont jamais vendues ni comptées. Les titres détenus hors de l'univers de la stratégie sont proposés à la vente.
+- Rien n'est exécuté automatiquement : l'utilisateur passe l'ordre chez son courtier puis saisit l'exécution réelle (quantité, prix, frais), ce qui met à jour positions, liquidités (prix de revient moyen) et le journal des mouvements.
+
 ## Sécurité et traçabilité
 
 - Mots de passe Argon2, politique de robustesse, verrouillage après 5 échecs, limitation par IP.

@@ -1,7 +1,7 @@
 import clsx from "clsx";
 import {
   Activity, AlertTriangle, ArrowLeftRight, BarChart3, BookOpen, Briefcase, Cpu, Database, FlaskConical, GitCompareArrows, Gauge,
-  LayoutDashboard, LineChart, Library, LogOut, Menu, Moon, ScrollText, Settings, ShieldCheck, Sun, Users, X,
+  ChevronDown, LayoutDashboard, LineChart, Library, LogOut, Menu, Moon, ScrollText, Settings, ShieldCheck, Sun, Users, Wallet, X,
 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
@@ -11,16 +11,21 @@ import { Logo } from "./Logo";
 
 interface Item { to: string; label: string; icon: ReactNode; perm?: string; end?: boolean }
 
+// Everyday use: what to do with my real accounts, and which strategy to follow.
 const MAIN: Item[] = [
   { to: "/", label: "Tableau de bord", icon: <LayoutDashboard size={17} />, end: true },
-  { to: "/research", label: "Research", icon: <BookOpen size={17} />, perm: "strategy:read" },
+  { to: "/accounts", label: "Ordres à passer", icon: <Wallet size={17} />, perm: "portfolio:read" },
+  { to: "/compare", label: "Comparer", icon: <GitCompareArrows size={17} />, perm: "backtest:read" },
   { to: "/strategies", label: "Stratégies", icon: <Library size={17} />, perm: "strategy:read" },
+];
+// Research tools, folded away until needed.
+const TOOLS: Item[] = [
   { to: "/backtests/new", label: "Laboratoire", icon: <FlaskConical size={17} />, perm: "backtest:run" },
   { to: "/backtests", label: "Backtests", icon: <BarChart3 size={17} />, perm: "backtest:read", end: true },
-  { to: "/compare", label: "Strategy Lab", icon: <GitCompareArrows size={17} />, perm: "backtest:read" },
-  { to: "/portfolios", label: "Portefeuilles", icon: <Briefcase size={17} />, perm: "portfolio:read" },
-  { to: "/transactions", label: "Transactions", icon: <ArrowLeftRight size={17} />, perm: "backtest:read" },
+  { to: "/portfolios", label: "Portefeuilles simulés", icon: <Briefcase size={17} />, perm: "portfolio:read" },
+  { to: "/transactions", label: "Transactions simulées", icon: <ArrowLeftRight size={17} />, perm: "backtest:read" },
   { to: "/markets", label: "Marchés", icon: <LineChart size={17} />, perm: "market:read" },
+  { to: "/research", label: "Research", icon: <BookOpen size={17} />, perm: "strategy:read" },
 ];
 const ADMIN: Item[] = [
   { to: "/admin", label: "Vue d'ensemble", icon: <Gauge size={17} />, perm: "system:read", end: true },
@@ -52,11 +57,30 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { user, can, logout } = useAuth();
   const theme = useTheme();
   const admin = ADMIN.filter((i) => !i.perm || can(i.perm));
+  const tools = TOOLS.filter((i) => !i.perm || can(i.perm));
+  const loc = useLocation();
+  const inTools = tools.some((i) => (i.end ? loc.pathname === i.to : loc.pathname.startsWith(i.to)));
+  const [toolsOpen, setToolsOpen] = useState(() => {
+    try { return localStorage.getItem("m2c-tools-open") === "1"; } catch { return false; }
+  });
+  const toggleTools = () => {
+    setToolsOpen(!toolsOpen);
+    try { localStorage.setItem("m2c-tools-open", toolsOpen ? "0" : "1"); } catch { /* storage unavailable */ }
+  };
   return (
     <div className="flex h-full flex-col" onClick={(e) => (e.target as HTMLElement).closest("a") && onNavigate?.()}>
       <div className="px-5 pb-6 pt-5"><Logo /></div>
       <nav className="flex-1 space-y-0.5 overflow-y-auto px-3">
         {MAIN.filter((i) => !i.perm || can(i.perm)).map((i) => <NavItem key={i.to} item={i} />)}
+        {tools.length > 0 && (
+          <>
+            <button type="button" onClick={toggleTools} aria-expanded={toolsOpen || inTools}
+              className="eyebrow flex w-full items-center justify-between px-3 pb-2 pt-6 hover:text-ink2">
+              Outils avancés <ChevronDown size={14} className={clsx("transition", (toolsOpen || inTools) && "rotate-180")} aria-hidden="true" />
+            </button>
+            {(toolsOpen || inTools) && tools.map((i) => <NavItem key={i.to} item={i} />)}
+          </>
+        )}
         {admin.length > 0 && (
           <>
             <div className="eyebrow px-3 pb-2 pt-6">Administration</div>

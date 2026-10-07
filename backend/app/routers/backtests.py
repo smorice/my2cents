@@ -113,7 +113,7 @@ def compare(ids: str, user: User = Depends(require(Perm.BACKTEST_READ)), db: Ses
             continue
         r = bt.results
         out.append({
-            "id": str(bt.id), "name": bt.name, "strategy_name": bt.strategy.name, "strategy_kind": bt.strategy.kind,
+            "id": str(bt.id), "name": bt.name, "strategy_id": str(bt.strategy_id), "strategy_name": bt.strategy.name, "strategy_kind": bt.strategy.kind,
             "strategy_version": bt.strategy_version, "config": bt.config, "summary": bt.summary,
             "series": {k: r["series"][k] for k in ("dates", "twr", "benchmark_twr", "drawdown", "equity", "invested")},
             "yearly": r["yearly"],

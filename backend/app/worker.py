@@ -1,8 +1,9 @@
 """Background worker: `python -m app.worker`.
 
-Runs queued jobs (backtests, market data syncs), recovers jobs abandoned by a
-dead worker, and schedules the periodic market data refresh. Several worker
-processes can run side by side; the queue hands each job to exactly one.
+Runs queued jobs (backtests, market data syncs, account reviews), recovers jobs
+abandoned by a dead worker, and schedules the periodic market data refresh and
+the weekday evening review of real accounts. Several worker processes can run
+side by side; the queue hands each job to exactly one.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
-from . import bootstrap, jobs, runner  # noqa: F401 - runner registers the job handlers
+from . import accounts, bootstrap, jobs, runner  # noqa: F401 - runner and accounts register the job handlers
 from .config import get_settings
 from .db import SessionLocal
 from .models import Job, WorkerHeartbeat, utcnow
@@ -77,6 +78,7 @@ def _housekeeping(stop: threading.Event, refresh: bool, name: str, concurrency: 
             jobs.recover_stale()
             if refresh:
                 schedule_market_refresh(timedelta(hours=settings.market_data_refresh_hours))
+                accounts.schedule_evening_review()
         except Exception:  # noqa: BLE001
             log.exception("housekeeping failed")
         stop.wait(60)

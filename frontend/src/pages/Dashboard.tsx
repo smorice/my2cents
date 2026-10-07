@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import clsx from "clsx";
-import { ArrowRight, FlaskConical, Play, Target } from "lucide-react";
+import { ArrowRight, FlaskConical, Play, Target, Wallet } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { PerformanceChart, Sparkline } from "../components/charts";
@@ -9,7 +9,7 @@ import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { dateTime, pct, ratio, spct, tone } from "../lib/format";
 import { METRIC_HELP, STATUS } from "../lib/labels";
-import type { Metrics } from "../lib/types";
+import type { Account, Metrics } from "../lib/types";
 import { useStrategies } from "../lib/queries";
 
 interface Brief { id: string; name: string; status: string; strategy_name: string; portfolio_id: string | null; created_at: string; cagr: number | null; sharpe: number | null; max_drawdown: number | null; benchmark_cagr: number | null }
@@ -107,6 +107,28 @@ function StrategiesPerformance() {
   );
 }
 
+/** Real accounts with orders waiting: the first thing to act on. */
+function PendingOrders() {
+  const { can } = useAuth();
+  const q = useQuery({ queryKey: ["accounts"], queryFn: () => api<Account[]>("/accounts"), enabled: can("portfolio:read") });
+  const waiting = (q.data ?? []).filter((a) => a.pending_orders > 0);
+  if (!waiting.length) return null;
+  return (
+    <div className="mb-6 space-y-2">
+      {waiting.map((a) => (
+        <Link key={a.id} to={`/accounts/${a.id}`}
+          className="flex items-center gap-3 rounded-2xl border border-accent/40 bg-accent/10 px-4 py-3 transition hover:border-accent">
+          <Wallet size={18} className="shrink-0 text-accent" aria-hidden="true" />
+          <span className="min-w-0 flex-1 text-sm text-ink">
+            <b>{a.pending_orders} ordre{a.pending_orders > 1 ? "s" : ""} à passer</b> sur « {a.name} » ({a.strategy_name})
+          </span>
+          <ArrowRight size={16} className="shrink-0 text-accent" aria-hidden="true" />
+        </Link>
+      ))}
+    </div>
+  );
+}
+
 export function DashboardPage() {
   const { user } = useAuth();
   const q = useQuery({ queryKey: ["dashboard"], queryFn: () => api<Dash>("/dashboard"), refetchInterval: (q) => (q.state.data?.recent.some((r) => r.status === "running" || r.status === "queued") ? 3000 : false) });
@@ -119,8 +141,10 @@ export function DashboardPage() {
     <>
       <PageHeader eyebrow={new Date().toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" })}
         title={`${hour < 18 ? "Bonjour" : "Bonsoir"}, ${user?.display_name}`}
-        description="Votre laboratoire de stratégies : explorez, testez sur l'historique, comparez à l'indice — avant toute décision réelle."
+        description="Comparez des stratégies sur l'historique, puis appliquez celle de votre choix à vos comptes réels : My2cents vous dit quoi acheter ou vendre."
         actions={<Link to="/strategies" className="btn-primary"><FlaskConical size={16} /> Explorer les stratégies</Link>} />
+
+      <PendingOrders />
 
       <StrategiesPerformance />
 

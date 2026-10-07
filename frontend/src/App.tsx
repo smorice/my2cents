@@ -2,6 +2,7 @@ import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Shell } from "./components/Shell";
 import { Loading } from "./components/ui";
 import { useAuth } from "./lib/auth";
+import { AccountPage, AccountsPage } from "./pages/Accounts";
 import { ActivityPage, TransactionsPage } from "./pages/Activity";
 import { AuditPage } from "./pages/admin/Audit";
 import { AdminErrorsPage, AdminHomePage, AdminJobsPage, AdminProvidersPage, AdminStrategiesPage } from "./pages/admin/System";
@@ -64,6 +65,8 @@ export function App() {
         <Route path="backtests/new" element={<Guard perm="backtest:read"><LabPage /></Guard>} />
         <Route path="backtests/:id" element={<Guard perm="backtest:read"><BacktestPage /></Guard>} />
         <Route path="compare" element={<Guard perm="backtest:read"><ComparePage /></Guard>} />
+        <Route path="accounts" element={<Guard perm="portfolio:read"><AccountsPage /></Guard>} />
+        <Route path="accounts/:id" element={<Guard perm="portfolio:read"><AccountPage /></Guard>} />
         <Route path="portfolios" element={<Guard perm="portfolio:read"><PortfoliosPage /></Guard>} />
         <Route path="portfolios/:id" element={<Guard perm="portfolio:read"><PortfolioPage /></Guard>} />
         <Route path="markets" element={<Guard perm="market:read"><MarketsPage /></Guard>} />

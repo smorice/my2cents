@@ -382,3 +382,109 @@ def test_other_users_cannot_reach_any_backtest_output(client):
     assert client.get(f"{API}/backtests/compare", params={"ids": bid}).status_code == 404
     assert client.delete(f"{API}/backtests/{bid}", headers=H).status_code in (403, 404)
     assert client.get(f"{API}/dashboard/performance", params={"focus": bid}).json()["items"] == []
+
+
+def _wait_job(c, job_id):
+    for _ in range(300):
+        j = c.get(f"{API}/jobs/{job_id}").json()
+        if j["status"] in ("completed", "failed"):
+            return j
+        time.sleep(0.1)
+    raise AssertionError(f"job stuck: {j['status']}")
+
+
+def _seed_private(symbols):
+    """Symbols no other test syncs from the network, so their prices stay put during the test."""
+    rng = np.random.default_rng(7)
+    idx = pd.bdate_range("2023-01-02", "2023-12-29")
+    with SessionLocal() as db:
+        for k, sym in enumerate(symbols):
+            px = 100 * np.exp(np.cumsum(rng.normal(0.0002 * (k + 1), 0.01, len(idx))))
+            db.merge(Instrument(symbol=sym, name=f"Test {sym}", kind="index" if sym.startswith("^") else "equity", currency="EUR",
+                                universes=["test"], last_synced_at=utcnow(), first_date=idx[0].date(), last_date=idx[-1].date()))
+            db.flush()
+            db.add_all([PriceBar(symbol=sym, date=d.date(), open=p, high=p, low=p, close=p, adj_close=p, volume=0) for d, p in zip(idx, px)])
+        db.commit()
+
+
+def test_real_account_orders_flow(client):
+    _seed_private(["RA1.TEST", "RA2.TEST", "RA3.TEST", "^RATEST"])
+    _login(client, "alice@example.com")
+    r = client.post(f"{API}/strategies", headers=H, json={"name": "Fixe 60/40", "kind": "fixed_allocation", "definition": {
+        "parameters": {"weights": {"RA1.TEST": 60, "RA2.TEST": 40}}, "universe": {"preset": None, "symbols": ["RA1.TEST", "RA2.TEST"]},
+        "benchmark": "^RATEST", "rebalance_frequency": "monthly"}})
+    assert r.status_code == 201, r.text
+    r = client.post(f"{API}/accounts", headers=H, json={"name": "PEA", "strategy_id": r.json()["id"], "cash": 5_000, "fee_pct": 0.5, "fee_min": 1})
+    assert r.status_code == 201, r.text
+    aid = r.json()["id"]
+    r = client.put(f"{API}/accounts/{aid}/positions", headers=H, json=[{"symbol": "ra3.test", "qty": 10, "avg_cost": 90}])
+    assert r.status_code == 200 and r.json()["positions"][0]["symbol"] == "RA3.TEST"
+    assert r.json()["total"] > 5_000
+
+    job = client.post(f"{API}/accounts/{aid}/review", headers=H).json()
+    assert _wait_job(client, job["id"])["status"] == "completed"
+    acc = client.get(f"{API}/accounts/{aid}").json()
+    prop = acc["latest_proposal"]
+    assert prop["mode"] == "full" and prop["status"] == "open" and prop["as_of"] == "2023-12-29"
+    sides = {(o["side"], o["symbol"]) for o in prop["orders"]}
+    assert sides == {("sell", "RA3.TEST"), ("buy", "RA1.TEST"), ("buy", "RA2.TEST")}
+    assert any("pas à jour" in w for w in prop["warnings"])  # seeded prices end in 2023
+    assert acc["pending_orders"] == 3
+
+    sell = next(o for o in prop["orders"] if o["side"] == "sell")
+    cash0 = acc["cash"]
+    r = client.post(f"{API}/accounts/{aid}/orders/{sell['id']}/execute", headers=H,
+                    json={"qty": 10, "price": 100, "fees": 1, "date": date.today().isoformat()})
+    assert r.status_code == 200, r.text
+    assert r.json()["cash"] == pytest.approx(cash0 + 999)
+    assert all(p["symbol"] != "RA3.TEST" for p in r.json()["positions"])
+    assert client.post(f"{API}/accounts/{aid}/orders/{sell['id']}/execute", headers=H,
+                       json={"qty": 10, "price": 100, "fees": 1, "date": date.today().isoformat()}).status_code == 409
+    buy = next(o for o in prop["orders"] if o["symbol"] == "RA1.TEST")
+    r = client.post(f"{API}/accounts/{aid}/orders/{buy['id']}/execute", headers=H,
+                    json={"qty": 2, "price": 50, "fees": 1, "date": date.today().isoformat()})
+    aaa = next(p for p in r.json()["positions"] if p["symbol"] == "RA1.TEST")
+    assert aaa["qty"] == 2 and aaa["avg_cost"] == pytest.approx(50.5)
+    other = next(o for o in prop["orders"] if o["symbol"] == "RA2.TEST")
+    client.post(f"{API}/accounts/{aid}/orders/{other['id']}/skip", headers=H)
+    assert client.get(f"{API}/accounts/{aid}").json()["latest_proposal"]["status"] == "closed"
+
+    moves = client.get(f"{API}/accounts/{aid}/movements").json()
+    assert [m["kind"] for m in moves][:2] == ["buy", "sell"] and moves[-1]["kind"] == "deposit"
+    assert moves[1]["realized_pnl"] == pytest.approx(999 - 900)
+    r = client.post(f"{API}/accounts/{aid}/movements", headers=H, json={"kind": "withdrawal", "date": date.today().isoformat(), "amount": 10**8})
+    assert r.status_code == 422
+
+    # A second review in the same rebalance period only checks stop-losses and idle cash.
+    job = client.post(f"{API}/accounts/{aid}/review", params={"full": False}, headers=H).json()
+    assert _wait_job(client, job["id"])["status"] == "completed"
+    hist = client.get(f"{API}/accounts/{aid}/proposals").json()
+    assert len(hist) == 2 and hist[0]["mode"] == "light"  # same month as the first review: no rebalance
+
+    # Isolation: another user sees nothing and can touch nothing.
+    _login(client, "carol@example.com")
+    assert client.get(f"{API}/accounts").json() == []
+    for path in ("", "/movements", "/proposals", f"/proposals/{prop['id']}"):
+        assert client.get(f"{API}/accounts/{aid}{path}").status_code == 404, path
+    assert client.post(f"{API}/accounts/{aid}/review", headers=H).status_code == 404
+    assert client.post(f"{API}/accounts/{aid}/orders/{other['id']}/skip", headers=H).status_code == 404
+    assert client.put(f"{API}/accounts/{aid}/positions", headers=H, json=[]).status_code == 404
+
+
+def test_evening_review_is_scheduled_once_per_weekday(client):
+    from datetime import datetime, timezone
+
+    from app import accounts
+
+    with SessionLocal() as db:
+        db.execute(text("DELETE FROM jobs WHERE kind = 'account_review'"))
+        db.commit()
+    sat = datetime(2026, 10, 10, 23, tzinfo=timezone.utc)
+    assert not accounts.schedule_evening_review(sat)
+    early = datetime.now(timezone.utc).replace(hour=3)
+    if early.weekday() < 5:
+        assert not accounts.schedule_evening_review(early)
+    late = datetime.now(timezone.utc).replace(hour=23, minute=0)
+    if late.weekday() < 5:
+        assert accounts.schedule_evening_review(late)
+        assert not accounts.schedule_evening_review(late)
