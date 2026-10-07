@@ -142,3 +142,22 @@ def test_param_validation():
         build("golden_cross", {"fast": 200, "slow": 50})
     with pytest.raises(ValueError):
         build("momentum", {"lookback_days": 17})
+
+
+def test_trades_point_to_their_decision():
+    close, open_, b, bo = make_prices()
+    res = Backtester(build("momentum", {"top_n": 1}), config(close), close, open_, b, bo).run()
+    by_seq = {d["seq"]: d for d in res["decisions"]}
+    assert [d["seq"] for d in res["decisions"]] == list(range(len(res["decisions"])))
+    linked = [t for t in res["trades"] if t["decision_seq"] is not None]
+    assert len(linked) == len(res["trades"])  # no contributions here: every order comes from a decision
+    for t in linked:
+        d = by_seq[t["decision_seq"]]
+        assert d["symbol"] == t["symbol"] and d["date"] < t["date"]
+
+
+def test_progress_is_reported():
+    close, open_, b, bo = make_prices()
+    seen = []
+    Backtester(build("buy_and_hold", {}), config(close), close, open_, b, bo).run(progress=seen.append)
+    assert seen[0] == 0 and 0.9 < seen[-1] <= 1 and seen == sorted(seen)

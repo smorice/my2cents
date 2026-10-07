@@ -197,6 +197,9 @@ class Portfolio(Base):
     strategy_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Simulation settings: capital, contributions (DCA), costs, period, benchmark
     settings: Mapped[dict] = mapped_column(JSONB, default=dict)
+    currency: Mapped[str] = mapped_column(String(8), default="EUR")
+    # Optional override of the strategy's benchmark
+    benchmark: Mapped[str | None] = mapped_column(String(24), nullable=True)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -224,6 +227,7 @@ class Backtest(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    job_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
 
     strategy: Mapped[Strategy] = relationship(lazy="joined")
 
@@ -246,6 +250,7 @@ class Instrument(Base):
     last_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provider: Mapped[str] = mapped_column(String(32), default="yahoo")
 
 
 class PriceBar(Base):
@@ -260,3 +265,153 @@ class PriceBar(Base):
     close: Mapped[float] = mapped_column(Float)
     adj_close: Mapped[float] = mapped_column(Float)
     volume: Mapped[float] = mapped_column(Float, default=0)
+    source: Mapped[str] = mapped_column(String(32), default="yahoo")
+    fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# Normalised simulation output (one row per decision / transaction / final position)
+# ---------------------------------------------------------------------------
+
+
+class BacktestDecision(Base):
+    __tablename__ = "backtest_decisions"
+    __table_args__ = (
+        Index("ix_bt_decisions_bt_date", "backtest_id", "date"),
+        Index("ix_bt_decisions_bt_symbol", "backtest_id", "symbol"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    backtest_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("backtests.id", ondelete="CASCADE"))
+    seq: Mapped[int] = mapped_column(Integer)  # engine-assigned, unique within a backtest
+    date: Mapped[date] = mapped_column(Date)
+    symbol: Mapped[str] = mapped_column(String(24))
+    # buy | sell | increase | decrease | hold | skip
+    action: Mapped[str] = mapped_column(String(12))
+    prev_weight: Mapped[float] = mapped_column(Float)
+    target_weight: Mapped[float] = mapped_column(Float)
+    reason: Mapped[str] = mapped_column(Text)
+    metrics: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+
+class BacktestTransaction(Base):
+    __tablename__ = "backtest_transactions"
+    __table_args__ = (
+        Index("ix_bt_tx_bt_date", "backtest_id", "date"),
+        Index("ix_bt_tx_bt_symbol", "backtest_id", "symbol"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    backtest_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("backtests.id", ondelete="CASCADE"))
+    seq: Mapped[int] = mapped_column(Integer)
+    date: Mapped[date] = mapped_column(Date)
+    symbol: Mapped[str] = mapped_column(String(24))
+    side: Mapped[str] = mapped_column(String(4))  # buy | sell
+    qty: Mapped[float] = mapped_column(Float)
+    price: Mapped[float] = mapped_column(Float)
+    value: Mapped[float] = mapped_column(Float)
+    fees: Mapped[float] = mapped_column(Float)
+    tax: Mapped[float] = mapped_column(Float)
+    realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reason: Mapped[str] = mapped_column(Text)
+    # Decision that caused the order; None for contribution investing.
+    decision_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class BacktestPosition(Base):
+    __tablename__ = "backtest_positions"
+
+    backtest_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("backtests.id", ondelete="CASCADE"), primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(24), primary_key=True)
+    qty: Mapped[float] = mapped_column(Float)
+    avg_cost: Mapped[float] = mapped_column(Float)
+    price: Mapped[float] = mapped_column(Float)
+    value: Mapped[float] = mapped_column(Float)
+    weight: Mapped[float] = mapped_column(Float)
+    unrealized_pnl: Mapped[float] = mapped_column(Float)
+
+
+# ---------------------------------------------------------------------------
+# Jobs (async work queue, consumed by the worker process)
+# ---------------------------------------------------------------------------
+
+
+class Job(Base):
+    __tablename__ = "jobs"
+    __table_args__ = (Index("ix_jobs_status_created", "status", "created_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=new_uuid)
+    kind: Mapped[str] = mapped_column(String(32))  # backtest | market_sync
+    # queued | running | completed | failed
+    status: Mapped[str] = mapped_column(String(12), default="queued")
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    progress: Mapped[float] = mapped_column(Float, default=0.0)
+    message: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    worker: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Shown to the user (no internals) vs. kept for administrators.
+    user_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# Market data bookkeeping
+# ---------------------------------------------------------------------------
+
+
+class Benchmark(Base):
+    __tablename__ = "benchmarks"
+
+    symbol: Mapped[str] = mapped_column(String(24), ForeignKey("instruments.symbol"), primary_key=True)
+    label: Mapped[str] = mapped_column(String(120))
+    description: Mapped[str] = mapped_column(Text, default="")
+    # True when the series includes reinvested dividends (fair against adjusted stock prices)
+    total_return: Mapped[bool] = mapped_column(Boolean, default=False)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class MarketDataSync(Base):
+    __tablename__ = "market_data_syncs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(24), index=True)
+    provider: Mapped[str] = mapped_column(String(32))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(12))  # success | failure
+    bars: Mapped[int] = mapped_column(Integer, default=0)
+    first_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    last_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# Observability
+# ---------------------------------------------------------------------------
+
+
+class AppError(Base):
+    __tablename__ = "app_errors"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    request_id: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    source: Mapped[str] = mapped_column(String(16))  # api | worker
+    method: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    path: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    error_type: Mapped[str] = mapped_column(String(120))
+    message: Mapped[str] = mapped_column(Text)
+    traceback: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class SchemaMigration(Base):
+    __tablename__ = "schema_migrations"
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    applied_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

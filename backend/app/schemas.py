@@ -273,6 +273,9 @@ class BacktestListOut(ORM):
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    job_id: uuid.UUID | None = None
+    progress: float | None = None
+    progress_message: str | None = None
 
 
 # ----------------------------------------------------------------- portfolios
@@ -293,6 +296,9 @@ class PortfolioIn(BaseModel):
     strategy_id: uuid.UUID
     strategy_version: int | None = None
     settings: PortfolioSettings
+    # Only EUR is simulated today: no FX conversion is applied anywhere.
+    currency: Literal["EUR"] = "EUR"
+    benchmark: str | None = Field(default=None, max_length=24)
 
 
 class PortfolioPatch(BaseModel):
@@ -302,6 +308,8 @@ class PortfolioPatch(BaseModel):
     strategy_version: int | None = None
     settings: PortfolioSettings | None = None
     archived: bool | None = None
+    currency: Literal["EUR"] | None = None
+    benchmark: str | None = Field(default=None, max_length=24)
 
 
 class InstrumentIn(BaseModel):

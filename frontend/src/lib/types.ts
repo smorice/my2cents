@@ -135,9 +135,14 @@ export interface BacktestRow {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  job_id: string | null;
+  progress: number | null;
+  progress_message: string | null;
 }
 
 export interface Trade {
+  seq: number;
+  decision_seq: number | null;
   date: string;
   symbol: string;
   side: "buy" | "sell";
@@ -151,6 +156,7 @@ export interface Trade {
 }
 
 export interface Decision {
+  seq: number;
   date: string;
   symbol: string;
   action: "buy" | "sell" | "increase" | "decrease" | "hold" | "skip";
@@ -177,14 +183,14 @@ export interface Results {
   yearly: { year: number; strategy: number | null; benchmark: number | null }[];
   positions: { symbol: string; name: string; qty: number; avg_cost: number; price: number; value: number; weight: number; unrealized_pnl: number; unrealized_pct: number }[];
   attribution: { symbol: string; name: string; pnl: number }[];
-  trades: Trade[];
   contributions: { date: string; amount: number; cumulative: number; portfolio_value: number }[];
   allocation_history: { date: string; weights: Record<string, number>; cash: number }[];
   warnings: string[];
   assumptions: string[];
   names: Record<string, string>;
   effective_period: { start: string; end: string };
-  decision_count: number;
+  counts: { decisions: number; trades: number; positions: number };
+  data_as_of: string | null;
 }
 
 export interface BacktestFull extends BacktestRow {

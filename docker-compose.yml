@@ -31,6 +31,25 @@ services:
       proxy:
         aliases: [my2cents-app]
 
+  worker:
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      MY2CENTS_DATABASE_URL: postgresql+psycopg://my2cents:${MY2CENTS_DB_PASSWORD}@db:5432/my2cents
+    # Lets a running backtest finish before the container is stopped (a killed job is re-queued anyway).
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,time;sys.exit(time.time()-os.path.getmtime('/tmp/my2cents-worker-alive')>180)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+    networks: [internal]
+
 volumes:
   db_data:
 

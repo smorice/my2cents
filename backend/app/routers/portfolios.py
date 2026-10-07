@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, defer
 from .. import audit, runner
 from ..db import get_db
 from ..deps import require
-from ..models import Backtest, Portfolio, User, utcnow
+from ..models import Backtest, Benchmark, Instrument, Portfolio, User, utcnow
 from ..rbac import Perm
 from ..schemas import BacktestIn, PortfolioIn, PortfolioPatch
 from .strategies import get_visible
@@ -25,7 +25,17 @@ def _own(db: Session, user: User, pid: uuid.UUID) -> Portfolio:
 
 def _snap(p: Portfolio) -> dict:
     return {"name": p.name, "description": p.description, "strategy_id": str(p.strategy_id) if p.strategy_id else None,
-            "strategy_version": p.strategy_version, "settings": p.settings, "archived": p.archived}
+            "strategy_version": p.strategy_version, "settings": p.settings, "archived": p.archived,
+            "currency": p.currency, "benchmark": p.benchmark}
+
+
+def _check_benchmark(db: Session, symbol: str | None) -> str | None:
+    if not symbol:
+        return None
+    symbol = symbol.strip().upper()
+    if db.get(Benchmark, symbol) is None and db.get(Instrument, symbol) is None:
+        raise HTTPException(422, f"Indice de référence inconnu : {symbol}")
+    return symbol
 
 
 def _latest(db: Session, pid: uuid.UUID) -> Backtest | None:
@@ -54,6 +64,7 @@ def _simulate(db: Session, user: User, p: Portfolio, request: Request) -> Backte
         strategy_id=strategy.id, version=p.strategy_version, name=f"Portefeuille · {p.name}",
         start=date.fromisoformat(s["start"]), end=date.fromisoformat(s["end"]) if s.get("end") else date.today(),
         initial_capital=s["initial_capital"], contributions=s["contributions"], tax_mode=s["tax_mode"], fractional=s["fractional"],
+        benchmark=p.benchmark,
     )
     bt = runner.create_backtest(db, user, strategy, body, portfolio_id=p.id, request=request)
     return bt
@@ -71,13 +82,13 @@ def list_portfolios(include_archived: bool = False, user: User = Depends(require
 def create_portfolio(body: PortfolioIn, request: Request, user: User = Depends(require(Perm.PORTFOLIO_WRITE)), db: Session = Depends(get_db)):
     strategy = get_visible(db, user, body.strategy_id)
     p = Portfolio(owner_id=user.id, name=body.name.strip(), description=body.description, strategy_id=strategy.id,
-                  strategy_version=body.strategy_version, settings=body.settings.model_dump(mode="json"))
+                  strategy_version=body.strategy_version, settings=body.settings.model_dump(mode="json"),
+                  currency=body.currency, benchmark=_check_benchmark(db, body.benchmark))
     db.add(p)
     db.flush()
     audit.record(db, "portfolio.create", actor=user, request=request, resource_type="portfolio", resource_id=p.id, after=_snap(p))
-    bt = _simulate(db, user, p, request)
+    _simulate(db, user, p, request)
     db.commit()
-    runner.submit(bt.id)
     db.refresh(p)
     return _out(db, p)
 
@@ -110,15 +121,18 @@ def patch_portfolio(pid: uuid.UUID, body: PortfolioPatch, request: Request, user
             setattr(p, f, v.strip() if isinstance(v, str) and f == "name" else v)
     if body.settings is not None:
         p.settings = body.settings.model_dump(mode="json")
+    if "benchmark" in body.model_fields_set:
+        p.benchmark = _check_benchmark(db, body.benchmark)
+    if body.currency is not None:
+        p.currency = body.currency
     p.updated_at = utcnow()
     after = _snap(p)
-    changed_alloc = before["strategy_id"] != after["strategy_id"] or before["strategy_version"] != after["strategy_version"] or before["settings"] != after["settings"]
+    changed_alloc = any(before[k] != after[k] for k in ("strategy_id", "strategy_version", "settings", "benchmark"))
     audit.record(db, "portfolio.allocation_change" if changed_alloc else "portfolio.update", actor=user, request=request,
                  resource_type="portfolio", resource_id=p.id, before=before, after=after)
-    bt = _simulate(db, user, p, request) if changed_alloc and not p.archived else None
+    if changed_alloc and not p.archived:
+        _simulate(db, user, p, request)
     db.commit()
-    if bt:
-        runner.submit(bt.id)
     return _out(db, p)
 
 
@@ -127,8 +141,7 @@ def simulate(pid: uuid.UUID, request: Request, user: User = Depends(require(Perm
     p = _own(db, user, pid)
     bt = _simulate(db, user, p, request)
     db.commit()
-    runner.submit(bt.id)
-    return {"id": str(bt.id)}
+    return {"id": str(bt.id), "job_id": str(bt.job_id)}
 
 
 @router.delete("/{pid}", status_code=204)

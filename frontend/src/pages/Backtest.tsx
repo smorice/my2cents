@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, Download, GitCompareArrows, RotateCcw, Trash2 } from "lucide-react";
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { AllocationChart, DrawdownChart, EquityChart, MonthlyHeatmap, YearlyBars } from "../components/charts";
 import { Badge, Card, ErrorNote, Help, Loading, Notice, PageHeader, Pagination, Spinner, Stat, Tabs, toast } from "../components/ui";
@@ -8,7 +8,7 @@ import { api, exportUrl } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { date, dateTime, days, eur, num, pct, ratio, spct, tone } from "../lib/format";
 import { ACTION, FREQ, METRIC_HELP, STATUS } from "../lib/labels";
-import type { BacktestFull, Decision, Metrics, Page, Results } from "../lib/types";
+import type { BacktestFull, Decision, Metrics, Page, Results, Trade } from "../lib/types";
 
 type Tab = "perf" | "alloc" | "decisions" | "trades" | "contrib" | "assumptions";
 
@@ -121,39 +121,45 @@ function DecisionExplorer({ id, names }: { id: string; names: Record<string, str
 function TradesTable({ r, id }: { r: Results; id: string }) {
   const [symbol, setSymbol] = useState("");
   const [page, setPage] = useState(1);
-  const rows = useMemo(() => [...r.trades].reverse().filter((t) => !symbol || t.symbol === symbol), [r.trades, symbol]);
-  const size = 50, pages = Math.max(1, Math.ceil(rows.length / size));
-  const syms = [...new Set(r.trades.map((t) => t.symbol))].sort();
+  const q = useQuery({
+    queryKey: ["transactions", id, symbol, page],
+    queryFn: () => api<Page<Trade> & { symbols: string[] }>(`/backtests/${id}/transactions`, { params: { symbol, page, page_size: 50 } }),
+    placeholderData: (p) => p,
+  });
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <select className="input w-auto" value={symbol} onChange={(e) => { setSymbol(e.target.value); setPage(1); }} aria-label="Filtrer par actif">
           <option value="">Tous les actifs</option>
-          {syms.map((s) => <option key={s} value={s}>{r.names[s] ?? s}</option>)}
+          {q.data?.symbols.map((s) => <option key={s} value={s}>{r.names[s] ?? s}</option>)}
         </select>
         <a className="btn-ghost ml-auto h-9 text-xs" href={exportUrl(id, "trades")}><Download size={14} /> CSV</a>
       </div>
-      <div className="overflow-x-auto">
-        <table className="table-base">
-          <thead><tr><th>Date</th><th>Actif</th><th>Sens</th><th className="text-right">Quantité</th><th className="text-right">Prix</th><th className="text-right">Montant</th><th className="text-right">Frais</th><th className="text-right">P/L réalisé</th><th>Motif</th></tr></thead>
-          <tbody>
-            {rows.slice((page - 1) * size, page * size).map((t, i) => (
-              <tr key={i}>
-                <td className="num whitespace-nowrap text-ink2">{date(t.date)}</td>
-                <td className="whitespace-nowrap font-medium">{r.names[t.symbol] ?? t.symbol}</td>
-                <td><Badge className={ACTION[t.side].cls}>{ACTION[t.side].label}</Badge></td>
-                <td className="num text-right">{num(t.qty, t.qty % 1 ? 3 : 0)}</td>
-                <td className="num text-right">{num(t.price)}</td>
-                <td className="num text-right">{eur(t.value)}</td>
-                <td className="num text-right text-ink2">{eur(t.fees + t.tax, true)}</td>
-                <td className={`num text-right ${tone(t.realized_pnl)}`}>{t.realized_pnl == null ? "—" : eur(t.realized_pnl)}</td>
-                <td className="max-w-[340px] truncate text-xs text-muted" title={t.reason}>{t.reason}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <Pagination page={page} pages={pages} total={rows.length} onPage={setPage} />
+      {q.isLoading ? <Loading /> : q.error ? <ErrorNote error={q.error} /> : (
+        <>
+          <div className="overflow-x-auto">
+            <table className="table-base">
+              <thead><tr><th>Date</th><th>Actif</th><th>Sens</th><th className="text-right">Quantité</th><th className="text-right">Prix</th><th className="text-right">Montant</th><th className="text-right">Frais</th><th className="text-right">P/L réalisé</th><th>Motif</th></tr></thead>
+              <tbody>
+                {q.data!.items.map((t) => (
+                  <tr key={t.seq}>
+                    <td className="num whitespace-nowrap text-ink2">{date(t.date)}</td>
+                    <td className="whitespace-nowrap font-medium">{r.names[t.symbol] ?? t.symbol}</td>
+                    <td><Badge className={ACTION[t.side].cls}>{ACTION[t.side].label}</Badge></td>
+                    <td className="num text-right">{num(t.qty, t.qty % 1 ? 3 : 0)}</td>
+                    <td className="num text-right">{num(t.price)}</td>
+                    <td className="num text-right">{eur(t.value)}</td>
+                    <td className="num text-right text-ink2">{eur(t.fees + t.tax, true)}</td>
+                    <td className={`num text-right ${tone(t.realized_pnl)}`}>{t.realized_pnl == null ? "—" : eur(t.realized_pnl)}</td>
+                    <td className="max-w-[340px] truncate text-xs text-muted" title={t.reason}>{t.reason}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Pagination page={q.data!.page} pages={q.data!.pages} total={q.data!.total} onPage={setPage} />
+        </>
+      )}
     </div>
   );
 }
@@ -185,8 +191,8 @@ export function BacktestView({ bt }: { bt: BacktestFull }) {
       <Tabs value={tab} onChange={setTab} tabs={[
         { value: "perf", label: "Performance" },
         { value: "alloc", label: "Positions & allocation", count: r.positions.length },
-        { value: "decisions", label: "Décisions", count: r.decision_count },
-        { value: "trades", label: "Transactions", count: r.trades.length },
+        { value: "decisions", label: "Décisions", count: r.counts.decisions },
+        { value: "trades", label: "Transactions", count: r.counts.trades },
         ...(dca ? [{ value: "contrib" as Tab, label: "Versements", count: r.contributions.length }] : []),
         { value: "assumptions", label: "Hypothèses" },
       ]} />
@@ -351,8 +357,11 @@ export function BacktestPage() {
       {(bt.status === "queued" || bt.status === "running") && (
         <div className="card flex flex-col items-center gap-3 px-6 py-20 text-center">
           <Spinner className="h-6 w-6" />
-          <div className="font-medium">{bt.status === "queued" ? "En file d'attente…" : "Simulation en cours…"}</div>
-          <p className="max-w-md text-sm text-muted">Mise à jour des cours, puis rejeu jour par jour de la stratégie. Quelques secondes à une minute selon la période et la fréquence.</p>
+          <div className="font-medium">{bt.status === "queued" ? "En file d'attente…" : bt.progress_message ?? "Simulation en cours…"}</div>
+          <div className="h-1.5 w-full max-w-sm overflow-hidden rounded-full bg-raised" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round((bt.progress ?? 0) * 100)}>
+            <div className="h-full rounded-full bg-accent transition-[width] duration-500" style={{ width: `${Math.max(3, (bt.progress ?? 0) * 100)}%` }} />
+          </div>
+          <p className="max-w-md text-sm text-muted">Calcul exécuté en arrière-plan : vous pouvez quitter cette page, le résultat sera conservé.</p>
         </div>
       )}
       {bt.status === "failed" && <ErrorNote error={bt.error ?? "Échec du backtest"} />}

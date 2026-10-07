@@ -1,15 +1,13 @@
 """Schema creation, DB-level guarantees and seed data. Idempotent."""
 
 import logging
-import threading
-import time
 
 from sqlalchemy import select, text
 
-from . import audit
+from . import audit, migrations
 from .config import get_settings
 from .db import Base, SessionLocal, engine
-from .engine.data import CAC40, ETFS, INDICES, ensure_fresh, seed_instruments
+from .marketdata.service import seed_instruments
 from .models import Role, Strategy, StrategyVersion, User
 from .rbac import DEFAULT_ROLES
 from .security import hash_password
@@ -58,9 +56,25 @@ TEMPLATES = [
 ]
 
 
+_BOOT_LOCK = 0x6D3264  # serialises start-up between the API and worker processes
+
+
+def prepare() -> None:
+    """Create / migrate the schema and seed reference data, once, whoever starts first."""
+    with engine.connect() as lock:
+        lock.execute(text("SELECT pg_advisory_lock(:k)"), {"k": _BOOT_LOCK})
+        try:
+            init_db()
+            seed()
+        finally:
+            lock.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _BOOT_LOCK})
+            lock.commit()
+
+
 def init_db() -> None:
-    Base.metadata.create_all(engine)
     with engine.begin() as conn:
+        Base.metadata.create_all(conn)
+        migrations.run(conn)
         conn.execute(text(APPEND_ONLY_SQL))
 
 
@@ -119,21 +133,3 @@ def seed() -> None:
                 audit.record(db, "user.bootstrap_admin", resource_type="user", resource_id=user.id, after={"email": email, "roles": user.role_names})
                 db.commit()
                 log.info("bootstrap admin %s created", email)
-
-
-def _refresh_loop() -> None:
-    settings = get_settings()
-    symbols = list(INDICES) + list(ETFS) + list(CAC40)
-    while True:
-        try:
-            with SessionLocal() as db:
-                warnings = ensure_fresh(db, symbols, settings.market_data_refresh_hours)
-                for w in warnings:
-                    log.warning(w)
-        except Exception:  # noqa: BLE001
-            log.exception("market data refresh failed")
-        time.sleep(3600)
-
-
-def start_market_refresher() -> None:
-    threading.Thread(target=_refresh_loop, name="market-refresh", daemon=True).start()

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, defer
 from .. import audit
 from ..db import get_db
 from ..deps import require
-from ..engine.data import UNIVERSES
+from ..marketdata.catalog import UNIVERSES
 from ..engine.strategies.library import REGISTRY, build
 from ..models import Backtest, Strategy, StrategyVersion, User, utcnow
 from ..rbac import Perm

@@ -7,8 +7,10 @@ from sqlalchemy.orm import Session, defer
 from .. import audit
 from ..db import get_db
 from ..deps import require
-from ..engine.data import UNIVERSES, DataError, sync_symbol
-from ..models import Backtest, Instrument, Portfolio, PriceBar, Strategy, User
+from ..marketdata.catalog import UNIVERSES
+from ..marketdata.providers import PROVIDERS, DataError
+from ..marketdata.service import sync_symbol
+from ..models import Backtest, Benchmark, Instrument, Portfolio, PriceBar, Strategy, User
 from ..rbac import Perm
 from ..schemas import InstrumentIn
 
@@ -18,12 +20,25 @@ router = APIRouter(tags=["market"])
 def _inst(i: Instrument) -> dict:
     return {"symbol": i.symbol, "name": i.name, "kind": i.kind, "currency": i.currency, "sector": i.sector,
             "universes": i.universes, "first_date": i.first_date, "last_date": i.last_date,
-            "last_synced_at": i.last_synced_at, "sync_error": i.sync_error}
+            "last_synced_at": i.last_synced_at, "sync_error": i.sync_error, "provider": i.provider}
 
 
 @router.get("/market/universes")
 def universes(_: User = Depends(require(Perm.MARKET_READ))):
     return [{"key": k, **v} for k, v in UNIVERSES.items()]
+
+
+@router.get("/market/benchmarks")
+def benchmarks(_: User = Depends(require(Perm.MARKET_READ)), db: Session = Depends(get_db)):
+    rows = db.execute(select(Benchmark, Instrument).join(Instrument, Instrument.symbol == Benchmark.symbol).order_by(Benchmark.sort_order)).all()
+    return [{"symbol": b.symbol, "label": b.label, "description": b.description, "total_return": b.total_return,
+             "currency": i.currency, "kind": i.kind, "first_date": i.first_date, "last_date": i.last_date,
+             "last_synced_at": i.last_synced_at, "available": i.last_date is not None} for b, i in rows]
+
+
+@router.get("/market/providers")
+def providers(_: User = Depends(require(Perm.MARKET_READ))):
+    return [{"name": p.name, "label": p.label, "description": p.description} for p in PROVIDERS.values()]
 
 
 @router.get("/market/instruments")
@@ -45,11 +60,9 @@ def add_instrument(body: InstrumentIn, request: Request, user: User = Depends(re
     try:
         n = sync_symbol(db, symbol)
     except DataError as exc:
-        db.rollback()
         raise HTTPException(404, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        db.rollback()
-        raise HTTPException(502, f"Source de données indisponible : {exc}") from exc
+        raise HTTPException(502, "Source de données indisponible, réessayez plus tard.") from exc
     audit.record(db, "market.instrument_add", actor=user, request=request, resource_type="instrument", resource_id=symbol, details={"bars": n})
     db.commit()
     return _inst(db.get(Instrument, symbol))
@@ -59,9 +72,10 @@ def add_instrument(body: InstrumentIn, request: Request, user: User = Depends(re
 def resync(symbol: str, request: Request, user: User = Depends(require(Perm.MARKET_REFRESH)), db: Session = Depends(get_db)):
     try:
         n = sync_symbol(db, symbol.upper())
+    except DataError as exc:
+        raise HTTPException(404, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        db.rollback()
-        raise HTTPException(502, str(exc)) from exc
+        raise HTTPException(502, "Source de données indisponible, réessayez plus tard.") from exc
     audit.record(db, "market.sync", actor=user, request=request, resource_type="instrument", resource_id=symbol.upper(), details={"bars": n})
     db.commit()
     return _inst(db.get(Instrument, symbol.upper()))

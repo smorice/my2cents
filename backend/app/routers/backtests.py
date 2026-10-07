@@ -1,6 +1,7 @@
 import csv
 import io
 import uuid
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -10,7 +11,7 @@ from sqlalchemy.orm import Session, defer
 from .. import audit, runner
 from ..db import get_db
 from ..deps import require
-from ..models import Backtest, User
+from ..models import Backtest, BacktestDecision, BacktestPosition, BacktestTransaction, Job, User
 from ..rbac import Perm
 from ..schemas import BacktestIn, BacktestListOut, BatchIn
 from .strategies import get_visible
@@ -25,11 +26,38 @@ def _own(db: Session, user: User, backtest_id: uuid.UUID) -> Backtest:
     return bt
 
 
-def _list_out(bt: Backtest) -> BacktestListOut:
+def _list_out(bt: Backtest, db: Session | None = None) -> BacktestListOut:
     o = BacktestListOut.model_validate(bt)
     o.strategy_name = bt.strategy.name if bt.strategy else None
     o.strategy_kind = bt.strategy.kind if bt.strategy else None
+    if db is not None and bt.job_id and bt.status in ("queued", "running"):
+        job = db.get(Job, bt.job_id)
+        if job:
+            o.progress, o.progress_message = job.progress, job.message
     return o
+
+
+def _page(total: int, page: int, size: int, items: list, **extra) -> dict:
+    return {"items": items, "total": total, "page": page, "page_size": size, "pages": max((total + size - 1) // size, 1), **extra}
+
+
+def _decision(d: BacktestDecision) -> dict:
+    return {"seq": d.seq, "date": d.date.isoformat(), "symbol": d.symbol, "action": d.action, "prev_weight": d.prev_weight,
+            "target_weight": d.target_weight, "reason": d.reason, "metrics": d.metrics}
+
+
+def _trade(t: BacktestTransaction) -> dict:
+    return {"seq": t.seq, "date": t.date.isoformat(), "symbol": t.symbol, "side": t.side, "qty": t.qty, "price": t.price,
+            "value": t.value, "fees": t.fees, "tax": t.tax, "realized_pnl": t.realized_pnl, "reason": t.reason,
+            "decision_seq": t.decision_seq}
+
+
+def positions_of(db: Session, bt: Backtest) -> list[dict]:
+    names = (bt.results or {}).get("names", {})
+    rows = db.scalars(select(BacktestPosition).where(BacktestPosition.backtest_id == bt.id).order_by(BacktestPosition.value.desc())).all()
+    return [{"symbol": p.symbol, "name": names.get(p.symbol, p.symbol), "qty": p.qty, "avg_cost": p.avg_cost, "price": p.price,
+             "value": p.value, "weight": p.weight, "unrealized_pnl": p.unrealized_pnl,
+             "unrealized_pct": p.unrealized_pnl / (p.value - p.unrealized_pnl) if p.value - p.unrealized_pnl else 0.0} for p in rows]
 
 
 @router.post("", response_model=BacktestListOut, status_code=202)
@@ -37,8 +65,7 @@ def launch(body: BacktestIn, request: Request, user: User = Depends(require(Perm
     strategy = get_visible(db, user, body.strategy_id)
     bt = runner.create_backtest(db, user, strategy, body, request=request)
     db.commit()
-    runner.submit(bt.id)
-    return _list_out(bt)
+    return _list_out(bt, db)
 
 
 @router.post("/batch", response_model=list[BacktestListOut], status_code=202)
@@ -49,9 +76,7 @@ def launch_batch(body: BatchIn, request: Request, user: User = Depends(require(P
         b = body.base.model_copy(update={"strategy_id": sid, "version": None, "name": None})
         created.append(runner.create_backtest(db, user, strategy, b, request=request))
     db.commit()
-    for bt in created:
-        runner.submit(bt.id)
-    return [_list_out(b) for b in created]
+    return [_list_out(b, db) for b in created]
 
 
 @router.get("")
@@ -73,8 +98,7 @@ def list_backtests(
         stmt = stmt.where(Backtest.portfolio_id.is_(None))
     total = db.scalar(select(func.count()).select_from(stmt.subquery()))
     rows = db.scalars(stmt.order_by(Backtest.created_at.desc()).offset((page - 1) * page_size).limit(page_size)).unique().all()
-    return {"items": [_list_out(b) for b in rows], "total": total, "page": page, "page_size": page_size,
-            "pages": max((total + page_size - 1) // page_size, 1)}
+    return _page(total, page, page_size, [_list_out(b, db) for b in rows])
 
 
 @router.get("/compare")
@@ -98,10 +122,9 @@ def compare(ids: str, user: User = Depends(require(Perm.BACKTEST_READ)), db: Ses
 @router.get("/{backtest_id}")
 def get_backtest(backtest_id: uuid.UUID, user: User = Depends(require(Perm.BACKTEST_READ)), db: Session = Depends(get_db)):
     bt = _own(db, user, backtest_id)
-    data = _list_out(bt).model_dump(mode="json")
+    data = _list_out(bt, db).model_dump(mode="json")
     if bt.results:
-        data["results"] = {k: v for k, v in bt.results.items() if k != "decisions"}
-        data["results"]["decision_count"] = len(bt.results.get("decisions", []))
+        data["results"] = {**bt.results, "positions": positions_of(db, bt)}
     return data
 
 
@@ -110,30 +133,57 @@ def decisions(
     backtest_id: uuid.UUID,
     symbol: str | None = None,
     action: str | None = None,
-    date_from: str | None = Query(None, alias="from"),
-    date_to: str | None = Query(None, alias="to"),
+    date_from: date | None = Query(None, alias="from"),
+    date_to: date | None = Query(None, alias="to"),
+    seq: str | None = Query(None, description="Comma-separated decision seqs"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=500),
     user: User = Depends(require(Perm.BACKTEST_READ)),
     db: Session = Depends(get_db),
 ):
     bt = _own(db, user, backtest_id)
-    rows = (bt.results or {}).get("decisions", [])
+    D = BacktestDecision
+    stmt = select(D).where(D.backtest_id == bt.id)
     if symbol:
-        rows = [r for r in rows if r["symbol"] == symbol]
+        stmt = stmt.where(D.symbol == symbol)
     if action:
-        acts = set(action.split(","))
-        rows = [r for r in rows if r["action"] in acts]
+        stmt = stmt.where(D.action.in_(action.split(",")))
     if date_from:
-        rows = [r for r in rows if r["date"] >= date_from]
+        stmt = stmt.where(D.date >= date_from)
     if date_to:
-        rows = [r for r in rows if r["date"] <= date_to]
-    rows = list(reversed(rows))
-    total = len(rows)
-    start = (page - 1) * page_size
-    return {"items": rows[start : start + page_size], "total": total, "page": page, "page_size": page_size,
-            "pages": max((total + page_size - 1) // page_size, 1),
-            "symbols": sorted({r["symbol"] for r in (bt.results or {}).get("decisions", [])})}
+        stmt = stmt.where(D.date <= date_to)
+    if seq:
+        stmt = stmt.where(D.seq.in_([int(x) for x in seq.split(",") if x.strip().isdigit()][:200]))
+    total = db.scalar(select(func.count()).select_from(stmt.subquery()))
+    rows = db.scalars(stmt.order_by(D.date.desc(), D.seq.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+    symbols = db.scalars(select(D.symbol).where(D.backtest_id == bt.id).distinct().order_by(D.symbol)).all()
+    return _page(total, page, page_size, [_decision(d) for d in rows], symbols=symbols)
+
+
+@router.get("/{backtest_id}/transactions")
+def transactions(
+    backtest_id: uuid.UUID,
+    symbol: str | None = None,
+    side: str | None = None,
+    decision_seq: int | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
+    user: User = Depends(require(Perm.BACKTEST_READ)),
+    db: Session = Depends(get_db),
+):
+    bt = _own(db, user, backtest_id)
+    T = BacktestTransaction
+    stmt = select(T).where(T.backtest_id == bt.id)
+    if symbol:
+        stmt = stmt.where(T.symbol == symbol)
+    if side in ("buy", "sell"):
+        stmt = stmt.where(T.side == side)
+    if decision_seq is not None:
+        stmt = stmt.where(T.decision_seq == decision_seq)
+    total = db.scalar(select(func.count()).select_from(stmt.subquery()))
+    rows = db.scalars(stmt.order_by(T.date.desc(), T.seq.desc()).offset((page - 1) * page_size).limit(page_size)).all()
+    symbols = db.scalars(select(T.symbol).where(T.backtest_id == bt.id).distinct().order_by(T.symbol)).all()
+    return _page(total, page, page_size, [_trade(t) for t in rows], symbols=symbols)
 
 
 @router.get("/{backtest_id}/export/{kind}.csv")
@@ -144,7 +194,8 @@ def export_csv(backtest_id: uuid.UUID, kind: str, request: Request, user: User =
     w = csv.writer(buf, delimiter=";")
     if kind == "trades":
         w.writerow(["date", "symbole", "sens", "quantité", "prix", "montant", "frais", "impôt", "plus-value réalisée", "raison"])
-        for t in r.get("trades", []):
+        T = BacktestTransaction
+        for t in map(_trade, db.scalars(select(T).where(T.backtest_id == bt.id).order_by(T.seq))):
             w.writerow([t["date"], t["symbol"], t["side"], f"{t['qty']:.6f}", f"{t['price']:.4f}", f"{t['value']:.2f}",
                         f"{t['fees']:.2f}", f"{t['tax']:.2f}", "" if t["realized_pnl"] is None else f"{t['realized_pnl']:.2f}", t["reason"]])
     elif kind == "equity":
@@ -154,7 +205,8 @@ def export_csv(backtest_id: uuid.UUID, kind: str, request: Request, user: User =
             w.writerow([d, s["equity"][i], s["invested"][i], s["benchmark_equity"][i], s["drawdown"][i]])
     elif kind == "decisions":
         w.writerow(["date", "symbole", "action", "poids avant", "poids cible", "raison"])
-        for x in r.get("decisions", []):
+        D = BacktestDecision
+        for x in map(_decision, db.scalars(select(D).where(D.backtest_id == bt.id).order_by(D.seq))):
             w.writerow([x["date"], x["symbol"], x["action"], f"{x['prev_weight']:.4f}", f"{x['target_weight']:.4f}", x["reason"]])
     elif kind == "contributions":
         w.writerow(["date", "versement", "cumul versé", "valeur du portefeuille"])
