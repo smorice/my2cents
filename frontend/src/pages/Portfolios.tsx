@@ -3,21 +3,21 @@ import { Briefcase, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { BacktestForm, defaultLaunch, type LaunchConfig } from "../components/BacktestForm";
-import { Badge, Card, Empty, ErrorNote, Field, Loading, Modal, Notice, PageHeader, Spinner, toast } from "../components/ui";
+import { Badge, Card, Empty, ErrorNote, Field, Loading, Modal, Notice, PageHeader, SourceBadge, Spinner, Stat, toast } from "../components/ui";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { date, dateTime, eur, pct, spct, tone } from "../lib/format";
 import { FREQ, STATUS } from "../lib/labels";
-import { useStrategies } from "../lib/queries";
+import { useBenchmarks, useStrategies } from "../lib/queries";
 import type { BacktestFull, Portfolio } from "../lib/types";
-import { BacktestView } from "./Backtest";
+import { BacktestView, Verdict } from "./Backtest";
 
-interface FormState { name: string; description: string; strategy_id: string; strategy_version: number | null; launch: LaunchConfig }
+interface FormState { name: string; description: string; strategy_id: string; strategy_version: number | null; benchmark: string | null; launch: LaunchConfig }
 
 function toBody(f: FormState) {
   const l = f.launch;
   return {
-    name: f.name, description: f.description, strategy_id: f.strategy_id, strategy_version: f.strategy_version,
+    name: f.name, description: f.description, strategy_id: f.strategy_id, strategy_version: f.strategy_version, benchmark: f.benchmark, currency: "EUR",
     settings: { start: l.start, end: null, initial_capital: l.initial_capital, contributions: l.contributions, tax_mode: l.tax_mode, fractional: l.fractional },
   };
 }
@@ -25,7 +25,9 @@ function toBody(f: FormState) {
 function PortfolioForm({ initial, onSubmit, pending, error, submitLabel }: { initial: FormState; onSubmit: (f: FormState) => void; pending: boolean; error: unknown; submitLabel: string }) {
   const [f, setF] = useState(initial);
   const strategies = useStrategies();
+  const benchmarks = useBenchmarks();
   const sel = strategies.data?.find((s) => s.id === f.strategy_id);
+  const stratBench = benchmarks.data?.find((b) => b.symbol === sel?.definition?.benchmark)?.label ?? sel?.definition?.benchmark;
   return (
     <form className="space-y-5" onSubmit={(e) => { e.preventDefault(); onSubmit(f); }}>
       <Field label="Nom du portefeuille"><input className="input" required value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="ex. PEA enfants — DCA 200 €/mois" /></Field>
@@ -44,6 +46,15 @@ function PortfolioForm({ initial, onSubmit, pending, error, submitLabel }: { ini
         </Field>
       </div>
       <p className="-mt-2 text-xs text-muted">La simulation court de la date de début jusqu'à aujourd'hui : c'est « ce que serait devenu ce portefeuille ».</p>
+      <div className="grid gap-4 sm:grid-cols-[1fr_140px]">
+        <Field label="Indice de référence" hint="Reçoit exactement les mêmes versements que le portefeuille.">
+          <select className="input" value={f.benchmark ?? ""} onChange={(e) => setF({ ...f, benchmark: e.target.value || null })}>
+            <option value="">Celui de la stratégie{stratBench ? ` (${stratBench})` : ""}</option>
+            {benchmarks.data?.filter((b) => b.available).map((b) => <option key={b.symbol} value={b.symbol}>{b.label}</option>)}
+          </select>
+        </Field>
+        <Field label="Devise" hint="Pas de conversion de change simulée."><select className="input" value="EUR" disabled><option>EUR</option></select></Field>
+      </div>
       <BacktestForm value={f.launch} onChange={(launch) => setF({ ...f, launch })} />
       <Field label="Notes"><textarea className="input min-h-[64px] py-2" value={f.description} onChange={(e) => setF({ ...f, description: e.target.value })} /></Field>
       <ErrorNote error={error} />
@@ -105,9 +116,37 @@ export function PortfoliosPage() {
         </div>
       )}
       <Modal open={open} onClose={() => setOpen(false)} title="Nouveau portefeuille" wide>
-        <PortfolioForm initial={{ name: "", description: "", strategy_id: "", strategy_version: null, launch }} onSubmit={(f) => create.mutate(f)} pending={create.isPending} error={create.error} submitLabel="Créer et simuler" />
+        <PortfolioForm initial={{ name: "", description: "", strategy_id: "", strategy_version: null, benchmark: null, launch }} onSubmit={(f) => create.mutate(f)} pending={create.isPending} error={create.error} submitLabel="Créer et simuler" />
       </Modal>
     </>
+  );
+}
+
+/** §18 « Vue générale » of a simulated portfolio, as of the last simulated day. */
+function Overview({ bt }: { bt: BacktestFull }) {
+  const r = bt.results!;
+  const s = r.summary.strategy, b = r.summary.benchmark;
+  const ser = r.series;
+  const last = ser.dates.length - 1;
+  const benchValue = ser.benchmark_equity[last];
+  const dd = ser.drawdown[last];
+  const bench = r.names[bt.config.benchmark] ?? bt.config.benchmark;
+  return (
+    <section className="card mb-6 p-5 sm:p-6" aria-label="Vue générale">
+      <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="font-semibold tracking-tight">Vue générale</h2>
+        <span className="text-xs text-muted">Valeurs simulées au {date(r.effective_period.end)}</span>
+      </div>
+      <div className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3 lg:grid-cols-6">
+        <Stat label="Valeur actuelle simulée" value={eur(s.final_value)} />
+        <Stat label="Capital investi" value={eur(s.total_invested)} />
+        <Stat label="Gains / pertes" value={eur(s.net_profit)} valueClass={tone(s.net_profit)} sub={spct((s.final_value ?? 0) / (s.total_invested || 1) - 1)} />
+        <Stat label="Performance annuelle" value={pct(s.irr)} valueClass={tone(s.irr)} sub={`TRI · CAGR ${pct(s.cagr)}`} />
+        <Stat label={bench.length > 22 ? "Indice (mêmes versements)" : bench} value={eur(benchValue)} sub={`CAGR ${pct(b.cagr)}`} />
+        <Stat label="Drawdown actuel" value={pct(dd)} valueClass={dd < -0.1 ? "text-neg" : undefined} sub={`pire : ${pct(s.max_drawdown)}`} />
+      </div>
+      <div className="mt-5 border-t border-line pt-5"><Verdict s={s} b={b} bench={bench} /></div>
+    </section>
   );
 }
 
@@ -142,12 +181,12 @@ export function PortfolioPage() {
   const sim = pf.latest_simulation;
   const st = pf.settings;
   const initial: FormState = {
-    name: pf.name, description: pf.description, strategy_id: pf.strategy_id ?? "", strategy_version: pf.strategy_version,
+    name: pf.name, description: pf.description, strategy_id: pf.strategy_id ?? "", strategy_version: pf.strategy_version, benchmark: pf.benchmark,
     launch: { ...defaultLaunch(), start: st.start, initial_capital: st.initial_capital, contributions: st.contributions, tax_mode: st.tax_mode as "none" | "pfu", fractional: st.fractional },
   };
   return (
     <>
-      <PageHeader eyebrow={<Link to="/portfolios" className="hover:text-ink">Portefeuilles</Link>} title={pf.name}
+      <PageHeader eyebrow={<span className="flex items-center gap-2"><Link to="/portfolios" className="hover:text-ink">Portefeuilles</Link><SourceBadge kind="simulated" title="Portefeuille simulé sur données historiques réelles : aucun ordre réel" /></span>} title={pf.name}
         description={<>Stratégie <Link to={`/strategies/${pf.strategy_id}`} className="text-accent hover:underline">{pf.strategy_name}</Link> ({pf.strategy_version ? `v${pf.strategy_version} figée` : `dernière version, v${pf.strategy_current_version}`}) · depuis le {date(st.start)} · {eur(st.initial_capital)} au départ{st.contributions.frequency !== "none" && ` puis ${eur(st.contributions.amount)} ${FREQ[st.contributions.frequency].toLowerCase()}`}{st.tax_mode === "pfu" ? " · compte-titres (flat tax)" : " · sans fiscalité (PEA)"}.</>}
         actions={can("portfolio:write") && (
           <>
@@ -159,7 +198,7 @@ export function PortfolioPage() {
       {pf.description && <p className="-mt-3 mb-6 text-sm text-ink2">{pf.description}</p>}
       {sim && ["queued", "running"].includes(sim.status) && <div className="card flex items-center justify-center gap-3 py-20 text-sm text-muted"><Spinner /> Simulation en cours…</div>}
       {sim?.status === "failed" && <ErrorNote error={sim.error} />}
-      {simId && (bt.isLoading ? <Loading /> : bt.data && <BacktestView bt={bt.data} />)}
+      {simId && (bt.isLoading ? <Loading /> : bt.data && <><Overview bt={bt.data} /><BacktestView bt={bt.data} hideSummary /></>)}
       {pf.history && pf.history.length > 1 && (
         <Card title="Simulations précédentes" className="mt-6" pad={false}>
           <div className="overflow-x-auto px-3 pb-3">

@@ -2,7 +2,9 @@ import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Shell } from "./components/Shell";
 import { Loading } from "./components/ui";
 import { useAuth } from "./lib/auth";
+import { ActivityPage, TransactionsPage } from "./pages/Activity";
 import { AuditPage } from "./pages/admin/Audit";
+import { AdminErrorsPage, AdminHomePage, AdminJobsPage, AdminProvidersPage, AdminStrategiesPage } from "./pages/admin/System";
 import { RolesPage } from "./pages/admin/Roles";
 import { UsersPage } from "./pages/admin/Users";
 import { ForgotPage, LoginPage, RegisterPage, ResetPage } from "./pages/Auth";
@@ -11,6 +13,9 @@ import { BacktestsPage } from "./pages/Backtests";
 import { ComparePage } from "./pages/Compare";
 import { LabPage } from "./pages/Lab";
 import { DashboardPage } from "./pages/Dashboard";
+import { LandingPage } from "./pages/Landing";
+import { OnboardingPage } from "./pages/Onboarding";
+import { ResearchPage } from "./pages/Research";
 import { MarketsPage } from "./pages/Markets";
 import { PortfolioPage, PortfoliosPage } from "./pages/Portfolios";
 import { SettingsPage } from "./pages/Settings";
@@ -22,6 +27,7 @@ function Protected() {
   const { user, loading } = useAuth();
   const loc = useLocation();
   if (loading) return <Loading />;
+  if (!user && loc.pathname === "/") return <LandingPage />;
   if (!user) return <Navigate to="/login" replace state={{ from: loc.pathname + loc.search }} />;
   return <Shell />;
 }
@@ -40,6 +46,16 @@ export function App() {
       <Route path="/reset-password" element={<ResetPage />} />
       <Route element={<Protected />}>
         <Route index element={<DashboardPage />} />
+        <Route path="dashboard" element={<Navigate to="/" replace />} />
+        <Route path="onboarding" element={<OnboardingPage />} />
+        <Route path="research" element={<Guard perm="strategy:read"><ResearchPage /></Guard>} />
+        <Route path="transactions" element={<Guard perm="backtest:read"><TransactionsPage /></Guard>} />
+        <Route path="audit" element={<ActivityPage />} />
+        <Route path="admin" element={<Guard perm="system:read"><AdminHomePage /></Guard>} />
+        <Route path="admin/jobs" element={<Guard perm="job:admin"><AdminJobsPage /></Guard>} />
+        <Route path="admin/errors" element={<Guard perm="system:read"><AdminErrorsPage /></Guard>} />
+        <Route path="admin/providers" element={<Guard perm="system:read"><AdminProvidersPage /></Guard>} />
+        <Route path="admin/strategies" element={<Guard perm="system:read"><AdminStrategiesPage /></Guard>} />
         <Route path="strategies" element={<Guard perm="strategy:read"><StrategiesPage /></Guard>} />
         <Route path="strategies/new" element={<Guard perm="strategy:create"><StrategyEditPage /></Guard>} />
         <Route path="strategies/:id" element={<Guard perm="strategy:read"><StrategyPage /></Guard>} />

@@ -304,3 +304,38 @@ def test_legacy_results_are_normalised(client):
         db.expire_all()
         assert "decisions" not in db.get(Backtest, bt.id).results
         assert db.query(BacktestDecision).filter(BacktestDecision.backtest_id == bt.id).count() == 1
+
+
+def test_admin_system_views_and_permissions(client):
+    client.cookies.clear()
+    client.post(f"{API}/auth/register", json={"email": "carol@example.com", "display_name": "Carol", "password": PW}, headers=H)
+    for path in ("/admin/overview", "/admin/jobs", "/admin/errors", "/admin/providers", "/admin/strategies"):
+        assert client.get(f"{API}{path}").status_code == 403, path
+    _login(client, "alice@example.com")  # AUDITOR since test_admin_role_change: may read the system state, not manage jobs
+    assert client.get(f"{API}/admin/overview").status_code == 200
+    assert client.get(f"{API}/admin/jobs").status_code == 403
+    mine = client.get(f"{API}/audit/me").json()
+    assert mine["total"] > 0 and all(e["actor_email"] == "alice@example.com" for e in mine["items"])
+    tx = client.get(f"{API}/transactions", params={"page_size": 5}).json()
+    assert tx["total"] > 0 and tx["items"][0]["backtest_name"] and tx["sources"]
+
+    _login(client, "admin@example.com", "Admin-Password-123")
+    ov = client.get(f"{API}/admin/overview").json()
+    assert ov["backtests"]["total"] >= 2 and "completed" in ov["jobs"]["by_status"]
+    jl = client.get(f"{API}/admin/jobs", params={"status": "failed", "kind": "backtest"}).json()
+    failed = jl["items"][0]
+    assert failed["internal_error"] and failed["owner_email"] == "alice@example.com"
+    r = client.post(f"{API}/admin/jobs/{failed['id']}/retry", headers=H)
+    assert r.status_code == 200 and r.json()["status"] in ("queued", "running", "failed")
+    assert client.post(f"{API}/admin/jobs/{failed['id']}/cancel", headers=H).status_code in (200, 409)
+    assert client.get(f"{API}/admin/errors").json()["total"] >= 1
+    prov = client.get(f"{API}/admin/providers").json()
+    assert prov["providers"][0]["name"] == "yahoo" and prov["instruments"]
+    assert any(e["action"] == "job.retry" for e in client.get(f"{API}/audit", params={"action": "job."}).json()["items"])
+
+
+def test_public_showcase_needs_no_login(client):
+    client.cookies.clear()
+    r = client.get(f"{API}/public/showcase")
+    # The test database has no CW8.PA history: the endpoint says so instead of inventing data.
+    assert r.status_code == 503

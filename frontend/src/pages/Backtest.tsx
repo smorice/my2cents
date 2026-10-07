@@ -5,7 +5,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { AllocationChart, AllocationDonut, ContributionChart, DrawdownChart, EquityChart, MonthlyHeatmap, RelativeChart, RollingChart, YearlyBars } from "../components/charts";
 
 import { AssetStory, DecisionDetail, TradeTimeline } from "../components/Explain";
-import { Badge, Card, ErrorNote, Help, Loading, Modal, Notice, PageHeader, Pagination, Segmented, Spinner, Stat, Tabs, toast } from "../components/ui";
+import { Badge, Card, ErrorNote, Help, Loading, Modal, Notice, PageHeader, Pagination, Segmented, SourceBadge, Spinner, Stat, Tabs, toast } from "../components/ui";
 import { api, exportUrl } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { date, dateTime, days, eur, num, pct, ratio, spct, tone } from "../lib/format";
@@ -225,7 +225,7 @@ function RiskAnalysis({ bt, bench, dca }: { bt: BacktestFull; bench: string; dca
   );
 }
 
-export function BacktestView({ bt }: { bt: BacktestFull }) {
+export function BacktestView({ bt, hideSummary }: { bt: BacktestFull; hideSummary?: boolean }) {
   const [tab, setTab] = useState<Tab>("perf");
   const [asset, setAsset] = useState<string | null>(null);
   const r = bt.results!;
@@ -234,7 +234,7 @@ export function BacktestView({ bt }: { bt: BacktestFull }) {
   const dca = r.contributions.length > 0;
   return (
     <>
-      <div className="card mb-6 p-5 sm:p-6">
+      {!hideSummary && <div className="card mb-6 p-5 sm:p-6">
         <div className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3 lg:grid-cols-6">
           <Stat label="Valeur finale" value={eur(s.final_value)} sub={`versé ${eur(s.total_invested)}`} />
           <Stat label="Gain net" value={eur(s.net_profit)} valueClass={tone(s.net_profit)} sub={dca ? `TRI ${pct(s.irr)}` : spct(s.total_return)} help={METRIC_HELP.irr} />
@@ -244,7 +244,7 @@ export function BacktestView({ bt }: { bt: BacktestFull }) {
           <Stat label="Volatilité" value={pct(s.volatility)} sub={`exposition ${pct(s.avg_exposure)}`} help={METRIC_HELP.volatility} />
         </div>
         <div className="mt-5 border-t border-line pt-5"><Verdict s={s} b={b} bench={bench} /></div>
-      </div>
+      </div>}
 
       {r.warnings.length > 0 && (
         <div className="mb-6"><Notice tone="warn"><ul className="space-y-1">{r.warnings.slice(0, 6).map((w, i) => <li key={i}>{w}</li>)}</ul></Notice></div>
@@ -426,7 +426,7 @@ export function BacktestPage() {
   return (
     <>
       <PageHeader
-        eyebrow={<span className="flex items-center gap-2"><Link to="/backtests" className="hover:text-ink">Backtests</Link><span>·</span><Link to={`/strategies/${bt.strategy_id}`} className="hover:text-ink">{bt.strategy_name} v{bt.strategy_version}</Link></span>}
+        eyebrow={<span className="flex flex-wrap items-center gap-2"><SourceBadge kind="simulated" title="Rejeu de la stratégie sur données historiques réelles" /><Link to="/backtests" className="hover:text-ink">Backtests</Link><span>·</span><Link to={`/strategies/${bt.strategy_id}`} className="hover:text-ink">{bt.strategy_name} v{bt.strategy_version}</Link></span>}
         title={bt.name}
         description={<>Lancé le {dateTime(bt.created_at)} {bt.status !== "done" && <Badge className={STATUS[bt.status].cls}>{STATUS[bt.status].label}</Badge>}</>}
         actions={bt.status === "done" && (

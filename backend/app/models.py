@@ -412,6 +412,17 @@ class AppError(Base):
     traceback: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class WorkerHeartbeat(Base):
+    """One row per worker process, refreshed every minute (liveness, even when idle)."""
+
+    __tablename__ = "worker_heartbeats"
+
+    name: Mapped[str] = mapped_column(String(80), primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    concurrency: Mapped[int] = mapped_column(Integer, default=1)
+
+
 class SchemaMigration(Base):
     __tablename__ = "schema_migrations"
 

@@ -277,6 +277,8 @@ export interface Portfolio {
     fractional: boolean;
   };
   archived: boolean;
+  currency: string;
+  benchmark: string | null;
   created_at: string;
   updated_at: string;
   latest_simulation: { id: string; status: string; created_at: string; error: string | null; summary: Metrics | null; benchmark: Metrics | null } | null;

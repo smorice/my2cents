@@ -11,7 +11,7 @@ from . import bootstrap
 from .config import get_settings
 from .deps import csrf_guard
 from .observability import new_request_id, record_error, request_id_var, setup_logging, user_id_var
-from .routers import admin, auth, backtests, jobs, market, portfolios, strategies
+from .routers import admin, auth, backtests, jobs, market, portfolios, strategies, system
 
 setup_logging()
 log = logging.getLogger("app.http")
@@ -29,7 +29,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="My2cents", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=f"{BASE}/api/openapi.json")
 
 api = APIRouter(prefix=f"{BASE}/api", dependencies=[Depends(csrf_guard)])
-for r in (auth.router, admin.router, strategies.router, backtests.router, portfolios.router, market.router, jobs.router):
+for r in (auth.router, admin.router, strategies.router, backtests.router, portfolios.router, market.router, jobs.router, system.router):
     api.include_router(r)
 
 

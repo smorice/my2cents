@@ -24,6 +24,8 @@ class Perm(StrEnum):
     AUDIT_READ = "audit:read"
     USER_ADMIN = "user:admin"
     ROLE_ADMIN = "role:admin"
+    JOB_ADMIN = "job:admin"
+    SYSTEM_READ = "system:read"
 
 
 PERMISSION_LABELS: dict[str, str] = {
@@ -42,6 +44,8 @@ PERMISSION_LABELS: dict[str, str] = {
     Perm.AUDIT_READ: "Consulter le journal d'audit",
     Perm.USER_ADMIN: "Administrer les utilisateurs",
     Perm.ROLE_ADMIN: "Administrer les rôles",
+    Perm.JOB_ADMIN: "Superviser et relancer les tâches de calcul",
+    Perm.SYSTEM_READ: "Consulter l'état du système (erreurs, données, métriques)",
 }
 
 _READ = [Perm.STRATEGY_READ, Perm.BACKTEST_READ, Perm.PORTFOLIO_READ, Perm.MARKET_READ]
@@ -61,6 +65,6 @@ DEFAULT_ROLES: dict[str, tuple[str, list[str]]] = {
         "Utilisateur avancé : peut aussi gérer les modèles et rafraîchir les données.",
         _USER + [Perm.STRATEGY_MANAGE_TEMPLATES, Perm.MARKET_REFRESH],
     ),
-    "AUDITOR": ("Lecture seule + journal d'audit.", _READ + [Perm.AUDIT_READ]),
+    "AUDITOR": ("Lecture seule + journal d'audit et état du système.", _READ + [Perm.AUDIT_READ, Perm.SYSTEM_READ]),
     "READ_ONLY": ("Lecture seule.", _READ),
 }

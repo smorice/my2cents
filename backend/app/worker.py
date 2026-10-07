@@ -17,11 +17,12 @@ from datetime import timedelta
 from pathlib import Path
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 
 from . import bootstrap, jobs, runner  # noqa: F401 - runner registers the job handlers
 from .config import get_settings
 from .db import SessionLocal
-from .models import Job, utcnow
+from .models import Job, WorkerHeartbeat, utcnow
 from .observability import setup_logging
 
 log = logging.getLogger("app.worker")
@@ -59,11 +60,20 @@ def schedule_market_refresh(every: timedelta) -> bool:
 ALIVE_FILE = Path(os.environ.get("MY2CENTS_WORKER_ALIVE_FILE", "/tmp/my2cents-worker-alive"))
 
 
-def _housekeeping(stop: threading.Event, refresh: bool) -> None:
+def _beat(name: str, concurrency: int) -> None:
+    with SessionLocal() as db:
+        now = utcnow()
+        db.execute(insert(WorkerHeartbeat).values(name=name, started_at=now, seen_at=now, concurrency=concurrency)
+                   .on_conflict_do_update(index_elements=[WorkerHeartbeat.name], set_={"seen_at": now}))
+        db.commit()
+
+
+def _housekeeping(stop: threading.Event, refresh: bool, name: str, concurrency: int) -> None:
     settings = get_settings()
     while not stop.is_set():
         try:
             ALIVE_FILE.touch()  # container healthcheck
+            _beat(name, concurrency)
             jobs.recover_stale()
             if refresh:
                 schedule_market_refresh(timedelta(hours=settings.market_data_refresh_hours))
@@ -76,7 +86,7 @@ def start(stop: threading.Event, concurrency: int = 2, idle: float = 1.0, refres
     name = f"{socket.gethostname()}-{os.getpid()}"
     threads = [threading.Thread(target=_loop, args=(f"{name}/{k}", stop, idle), name=f"worker-{k}", daemon=True)
                for k in range(concurrency)]
-    threads.append(threading.Thread(target=_housekeeping, args=(stop, refresh), name="housekeeping", daemon=True))
+    threads.append(threading.Thread(target=_housekeeping, args=(stop, refresh, name, concurrency), name="housekeeping", daemon=True))
     for t in threads:
         t.start()
     return threads

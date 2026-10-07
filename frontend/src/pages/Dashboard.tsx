@@ -54,8 +54,11 @@ function StrategiesPerformance() {
     return (
       <div className="card mb-6">
         <Empty icon={<FlaskConical size={28} />} title="Comment vos stratégies auraient-elles performé ?"
-          action={<Link to="/backtests/new" className="btn-primary"><Play size={15} /> Lancer ma première simulation</Link>}>
-          Lancez un premier backtest : sa courbe face à l'indice et ses indicateurs clés apparaîtront ici.
+          action={<div className="flex flex-wrap justify-center gap-2">
+            <Link to="/onboarding" className="btn-primary"><Play size={15} /> Démarrer en 5 étapes</Link>
+            <Link to="/backtests/new" className="btn-outline">Ouvrir le laboratoire</Link>
+          </div>}>
+          Choisissez une stratégie, un indice et un capital : votre premier résultat s'affiche en quelques secondes, avec sa courbe face à l'indice et ses indicateurs clés.
         </Empty>
       </div>
     );

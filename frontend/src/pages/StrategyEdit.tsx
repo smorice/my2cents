@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Save, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { KindIcon } from "../components/KindIcon";
 import { Card, ErrorNote, Field, Loading, Notice, PageHeader, Toggle, toast } from "../components/ui";
 import { api } from "../lib/api";
@@ -12,7 +12,7 @@ import type { Definition, Param, Strategy, StrategyKind } from "../lib/types";
 const emptyDef = (k?: StrategyKind): Definition => ({
   parameters: Object.fromEntries((k?.params ?? []).map((p) => [p.key, p.default])),
   universe: { preset: k?.kind === "fixed_allocation" ? null : "cac40", symbols: [] },
-  benchmark: k?.kind === "fixed_allocation" ? "CW8.PA" : "^FCHI",
+  benchmark: k?.kind === "fixed_allocation" ? "CW8.PA" : "CAC.PA",
   rebalance_frequency: k?.default_rebalance ?? "monthly",
   transaction_cost_model: { fee_pct: 0.1, fee_min: 0, slippage_bps: 5 },
   risk_model: { max_weight_pct: 100, cash_buffer_pct: 0, stop_loss_pct: 0 },
@@ -70,7 +70,8 @@ export function StrategyEditPage() {
   const instruments = useInstruments();
   const existing = useQuery({ queryKey: ["strategy", id], queryFn: () => api<Strategy>(`/strategies/${id}`), enabled: !isNew });
 
-  const [kind, setKind] = useState<string>("benchmark_outperformance");
+  const [search] = useSearchParams();
+  const [kind, setKind] = useState<string>(search.get("kind") ?? "benchmark_outperformance");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [def, setDef] = useState<Definition | null>(null);
