@@ -123,7 +123,7 @@ export function RegisterPage() {
       if (f.password !== f.confirm) throw new Error("Les deux mots de passe ne correspondent pas.");
       return api<User>("/auth/register", { method: "POST", body: { email: f.email, display_name: f.display_name, password: f.password } });
     },
-    onSuccess: (u) => { qc.setQueryData(["me"], u); nav("/", { replace: true }); },
+    onSuccess: (u) => { qc.setQueryData(["me"], u); nav("/onboarding", { replace: true }); },
   });
   return (
     <AuthLayout title="Créer un compte" subtitle="Gratuit, personnel, sans engagement."

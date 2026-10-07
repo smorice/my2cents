@@ -1,18 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, Download, GitCompareArrows, RotateCcw, Trash2 } from "lucide-react";
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { AllocationChart, DrawdownChart, EquityChart, MonthlyHeatmap, YearlyBars } from "../components/charts";
-import { Badge, Card, ErrorNote, Help, Loading, Notice, PageHeader, Pagination, Spinner, Stat, Tabs, toast } from "../components/ui";
+import { AllocationChart, AllocationDonut, ContributionChart, DrawdownChart, EquityChart, MonthlyHeatmap, RelativeChart, RollingChart, YearlyBars } from "../components/charts";
+
+import { AssetStory, DecisionDetail, TradeTimeline } from "../components/Explain";
+import { Badge, Card, ErrorNote, Help, Loading, Modal, Notice, PageHeader, Pagination, Segmented, SourceBadge, Spinner, Stat, Tabs, toast } from "../components/ui";
 import { api, exportUrl } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { date, dateTime, days, eur, num, pct, ratio, spct, tone } from "../lib/format";
 import { ACTION, FREQ, METRIC_HELP, STATUS } from "../lib/labels";
-import type { BacktestFull, Decision, Metrics, Page, Results } from "../lib/types";
+import type { BacktestFull, Decision, Metrics, Page, Results, Trade } from "../lib/types";
 
-type Tab = "perf" | "alloc" | "decisions" | "trades" | "contrib" | "assumptions";
+type Tab = "perf" | "risk" | "alloc" | "decisions" | "trades" | "contrib" | "assumptions";
 
-function Verdict({ s, b, bench }: { s: Metrics; b: Metrics; bench: string }) {
+export function Verdict({ s, b, bench }: { s: Metrics; b: Metrics; bench: string }) {
   const diff = (s.cagr ?? 0) - (b.cagr ?? 0);
   const ddBetter = (s.max_drawdown ?? 0) > (b.max_drawdown ?? 0);
   return (
@@ -52,7 +54,31 @@ function MetricsTable({ s, b }: { s: Metrics; b: Metrics }) {
   );
 }
 
-function DecisionExplorer({ id, names }: { id: string; names: Record<string, string> }) {
+function AssetButton({ symbol, names, onAsset }: { symbol: string; names: Record<string, string>; onAsset: (s: string) => void }) {
+  return (
+    <button type="button" className="group text-left" onClick={(e) => { e.stopPropagation(); onAsset(symbol); }} title="Voir l'historique de cet actif">
+      <div className="font-medium group-hover:text-accent group-hover:underline">{names[symbol] ?? symbol}</div>
+      <div className="text-xs text-muted">{symbol}</div>
+    </button>
+  );
+}
+
+function DecisionModal({ bt, seq, names, onClose }: { bt: BacktestFull; seq: number | null; names: Record<string, string>; onClose: () => void }) {
+  const q = useQuery({
+    queryKey: ["decision", bt.id, seq],
+    queryFn: () => api<Page<Decision>>(`/backtests/${bt.id}/decisions`, { params: { seq } }),
+    enabled: seq != null,
+  });
+  const d = q.data?.items[0];
+  return (
+    <Modal open={seq != null} onClose={onClose} wide title={d ? <>{ACTION[d.action].label} — {names[d.symbol] ?? d.symbol} <span className="num ml-1 text-sm font-normal text-muted">{date(d.date)}</span></> : "Décision"}>
+      {q.isLoading ? <Loading /> : q.error ? <ErrorNote error={q.error} /> : d && <DecisionDetail bt={bt} d={d} names={names} />}
+    </Modal>
+  );
+}
+
+function DecisionExplorer({ bt, names, onAsset }: { bt: BacktestFull; names: Record<string, string>; onAsset: (s: string) => void }) {
+  const id = bt.id;
   const [symbol, setSymbol] = useState("");
   const [actions, setActions] = useState<string[]>(["buy", "sell", "increase", "decrease"]);
   const [from, setFrom] = useState("");
@@ -83,27 +109,25 @@ function DecisionExplorer({ id, names }: { id: string; names: Record<string, str
       </div>
       {q.isLoading ? <Loading /> : (
         <>
-          <div className="overflow-x-auto">
+          <div tabIndex={0} className="overflow-x-auto">
             <table className="table-base">
               <thead><tr><th>Date</th><th>Actif</th><th>Décision</th><th className="text-right">Poids</th><th>Pourquoi</th></tr></thead>
               <tbody>
                 {q.data!.items.map((d, i) => (
-                  <Fragment key={i}>
+                  <Fragment key={d.seq}>
                     <tr className="cursor-pointer hover:bg-raised/50" onClick={() => setOpen(open === i ? null : i)}>
                       <td className="num whitespace-nowrap text-ink2">{date(d.date)}</td>
-                      <td className="whitespace-nowrap"><div className="font-medium">{names[d.symbol] ?? d.symbol}</div><div className="text-xs text-muted">{d.symbol}</div></td>
+                      <td className="whitespace-nowrap"><AssetButton symbol={d.symbol} names={names} onAsset={onAsset} /></td>
                       <td><Badge className={ACTION[d.action].cls}>{ACTION[d.action].label}</Badge></td>
                       <td className="num whitespace-nowrap text-right">{pct(d.prev_weight)} <span className="text-muted">→</span> {pct(d.target_weight)}</td>
-                      <td className="min-w-[280px] text-ink2"><span className="flex items-start gap-1"><ChevronRight size={14} className={`mt-0.5 shrink-0 text-muted transition ${open === i ? "rotate-90" : ""}`} />{d.reason}</span></td>
+                      <td className="min-w-[280px] text-ink2">
+                        <button type="button" className="flex items-start gap-1 text-left" aria-expanded={open === i} onClick={(e) => { e.stopPropagation(); setOpen(open === i ? null : i); }}>
+                          <ChevronRight size={14} className={`mt-0.5 shrink-0 text-muted transition ${open === i ? "rotate-90" : ""}`} aria-hidden="true" />{d.reason}
+                        </button>
+                      </td>
                     </tr>
-                    {open === i && Object.keys(d.metrics).length > 0 && (
-                      <tr><td colSpan={5} className="bg-raised/40">
-                        <div className="flex flex-wrap gap-x-6 gap-y-1 px-2 text-xs">
-                          {Object.entries(d.metrics).map(([k, v]) => (
-                            <span key={k}><span className="text-muted">{k} </span><span className="num">{v == null ? "—" : Math.abs(v) < 5 && !["rank"].includes(k) ? num(v, 4) : num(v, 2)}</span></span>
-                          ))}
-                        </div>
-                      </td></tr>
+                    {open === i && (
+                      <tr><td colSpan={5} className="bg-raised/30 !p-4 sm:!p-5"><DecisionDetail bt={bt} d={d} names={names} /></td></tr>
                     )}
                   </Fragment>
                 ))}
@@ -118,55 +142,103 @@ function DecisionExplorer({ id, names }: { id: string; names: Record<string, str
   );
 }
 
-function TradesTable({ r, id }: { r: Results; id: string }) {
+function TradesTable({ bt, r, onAsset }: { bt: BacktestFull; r: Results; onAsset: (s: string) => void }) {
+  const id = bt.id;
   const [symbol, setSymbol] = useState("");
+  const [decision, setDecision] = useState<number | null>(null);
   const [page, setPage] = useState(1);
-  const rows = useMemo(() => [...r.trades].reverse().filter((t) => !symbol || t.symbol === symbol), [r.trades, symbol]);
-  const size = 50, pages = Math.max(1, Math.ceil(rows.length / size));
-  const syms = [...new Set(r.trades.map((t) => t.symbol))].sort();
+  const q = useQuery({
+    queryKey: ["transactions", id, symbol, page],
+    queryFn: () => api<Page<Trade> & { symbols: string[] }>(`/backtests/${id}/transactions`, { params: { symbol, page, page_size: 50 } }),
+    placeholderData: (p) => p,
+  });
   return (
     <div>
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <select className="input w-auto" value={symbol} onChange={(e) => { setSymbol(e.target.value); setPage(1); }} aria-label="Filtrer par actif">
           <option value="">Tous les actifs</option>
-          {syms.map((s) => <option key={s} value={s}>{r.names[s] ?? s}</option>)}
+          {q.data?.symbols.map((s) => <option key={s} value={s}>{r.names[s] ?? s}</option>)}
         </select>
         <a className="btn-ghost ml-auto h-9 text-xs" href={exportUrl(id, "trades")}><Download size={14} /> CSV</a>
       </div>
-      <div className="overflow-x-auto">
-        <table className="table-base">
-          <thead><tr><th>Date</th><th>Actif</th><th>Sens</th><th className="text-right">Quantité</th><th className="text-right">Prix</th><th className="text-right">Montant</th><th className="text-right">Frais</th><th className="text-right">P/L réalisé</th><th>Motif</th></tr></thead>
-          <tbody>
-            {rows.slice((page - 1) * size, page * size).map((t, i) => (
-              <tr key={i}>
-                <td className="num whitespace-nowrap text-ink2">{date(t.date)}</td>
-                <td className="whitespace-nowrap font-medium">{r.names[t.symbol] ?? t.symbol}</td>
-                <td><Badge className={ACTION[t.side].cls}>{ACTION[t.side].label}</Badge></td>
-                <td className="num text-right">{num(t.qty, t.qty % 1 ? 3 : 0)}</td>
-                <td className="num text-right">{num(t.price)}</td>
-                <td className="num text-right">{eur(t.value)}</td>
-                <td className="num text-right text-ink2">{eur(t.fees + t.tax, true)}</td>
-                <td className={`num text-right ${tone(t.realized_pnl)}`}>{t.realized_pnl == null ? "—" : eur(t.realized_pnl)}</td>
-                <td className="max-w-[340px] truncate text-xs text-muted" title={t.reason}>{t.reason}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <Pagination page={page} pages={pages} total={rows.length} onPage={setPage} />
+      {q.isLoading ? <Loading /> : q.error ? <ErrorNote error={q.error} /> : (
+        <>
+          <div tabIndex={0} className="overflow-x-auto">
+            <table className="table-base">
+              <thead><tr><th>Date</th><th>Actif</th><th>Sens</th><th className="text-right">Quantité</th><th className="text-right">Prix</th><th className="text-right">Montant</th><th className="text-right">Frais</th><th className="text-right">P/L réalisé</th><th>Motif</th><th><span className="sr-only">Décision</span></th></tr></thead>
+              <tbody>
+                {q.data!.items.map((t) => (
+                  <tr key={t.seq}>
+                    <td className="num whitespace-nowrap text-ink2">{date(t.date)}</td>
+                    <td className="whitespace-nowrap"><AssetButton symbol={t.symbol} names={r.names} onAsset={onAsset} /></td>
+                    <td><Badge className={ACTION[t.side].cls}>{ACTION[t.side].label}</Badge></td>
+                    <td className="num text-right">{num(t.qty, t.qty % 1 ? 3 : 0)}</td>
+                    <td className="num text-right">{num(t.price)}</td>
+                    <td className="num text-right">{eur(t.value)}</td>
+                    <td className="num text-right text-ink2">{eur(t.fees + t.tax, true)}</td>
+                    <td className={`num text-right ${tone(t.realized_pnl)}`}>{t.realized_pnl == null ? "—" : eur(t.realized_pnl)}</td>
+                    <td className="max-w-[340px] truncate text-xs text-muted" title={t.reason}>{t.reason}</td>
+                    <td className="whitespace-nowrap text-right">
+                      {t.decision_seq != null && <button className="btn-ghost h-7 px-2 text-xs" onClick={() => setDecision(t.decision_seq)}>Pourquoi ?</button>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Pagination page={q.data!.page} pages={q.data!.pages} total={q.data!.total} onPage={setPage} />
+        </>
+      )}
+      <DecisionModal bt={bt} seq={decision} names={r.names} onClose={() => setDecision(null)} />
     </div>
   );
 }
 
-export function BacktestView({ bt }: { bt: BacktestFull }) {
+interface Analytics {
+  window_days: number; dates: string[]; volatility: (number | null)[]; benchmark_volatility: (number | null)[];
+  sharpe: (number | null)[]; benchmark_sharpe: (number | null)[]; relative: (number | null)[];
+  invested: (number | null)[]; gains: (number | null)[]; win_rate: number | null; closed_trades: number;
+}
+
+function RiskAnalysis({ bt, bench, dca }: { bt: BacktestFull; bench: string; dca: boolean }) {
+  const [days, setDays] = useState<"63" | "126" | "252">("126");
+  const q = useQuery({ queryKey: ["analytics", bt.id, days], queryFn: () => api<Analytics>(`/backtests/${bt.id}/analytics`, { params: { days } }), placeholderData: (p) => p });
+  if (q.isLoading) return <Loading />;
+  if (q.error) return <ErrorNote error={q.error} />;
+  const a = q.data!;
+  const win = <Segmented size="sm" value={days} onChange={setDays} options={[{ value: "63", label: "3 mois" }, { value: "126", label: "6 mois" }, { value: "252", label: "1 an" }]} />;
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-6 xl:grid-cols-2">
+        <Card title="Volatilité glissante" subtitle="Écart-type annualisé des rendements sur la fenêtre choisie" actions={win}>
+          <RollingChart dates={a.dates} a={a.volatility} b={a.benchmark_volatility} fmt={(v) => pct(v)} benchName={bench} label="Volatilité glissante" />
+        </Card>
+        <Card title="Sharpe glissant" subtitle="Rendement excédentaire par unité de risque, sur la même fenêtre" actions={win}>
+          <RollingChart dates={a.dates} a={a.sharpe} b={a.benchmark_sharpe} fmt={(v) => ratio(v)} benchName={bench} label="Ratio de Sharpe glissant" />
+        </Card>
+      </div>
+      <div className="grid gap-6 xl:grid-cols-2">
+        <Card title="Performance relative" subtitle={`Avance (vert) ou retard (rouge) cumulé sur ${bench}, hors effet des versements`}>
+          <RelativeChart dates={a.dates} values={a.relative} benchName={bench} />
+        </Card>
+        <Card title="Analyse des contributions" subtitle={dca ? "Ce qui vient de vos versements, et ce qui vient du marché" : "Capital de départ et plus ou moins-values"}>
+          <ContributionChart dates={a.dates} invested={a.invested} gains={a.gains} />
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+export function BacktestView({ bt, hideSummary }: { bt: BacktestFull; hideSummary?: boolean }) {
   const [tab, setTab] = useState<Tab>("perf");
+  const [asset, setAsset] = useState<string | null>(null);
   const r = bt.results!;
   const s = r.summary.strategy, b = r.summary.benchmark;
   const bench = r.names[bt.config.benchmark] ?? bt.config.benchmark;
   const dca = r.contributions.length > 0;
   return (
     <>
-      <div className="card mb-6 p-5 sm:p-6">
+      {!hideSummary && <div className="card mb-6 p-5 sm:p-6">
         <div className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3 lg:grid-cols-6">
           <Stat label="Valeur finale" value={eur(s.final_value)} sub={`versé ${eur(s.total_invested)}`} />
           <Stat label="Gain net" value={eur(s.net_profit)} valueClass={tone(s.net_profit)} sub={dca ? `TRI ${pct(s.irr)}` : spct(s.total_return)} help={METRIC_HELP.irr} />
@@ -176,7 +248,7 @@ export function BacktestView({ bt }: { bt: BacktestFull }) {
           <Stat label="Volatilité" value={pct(s.volatility)} sub={`exposition ${pct(s.avg_exposure)}`} help={METRIC_HELP.volatility} />
         </div>
         <div className="mt-5 border-t border-line pt-5"><Verdict s={s} b={b} bench={bench} /></div>
-      </div>
+      </div>}
 
       {r.warnings.length > 0 && (
         <div className="mb-6"><Notice tone="warn"><ul className="space-y-1">{r.warnings.slice(0, 6).map((w, i) => <li key={i}>{w}</li>)}</ul></Notice></div>
@@ -184,9 +256,10 @@ export function BacktestView({ bt }: { bt: BacktestFull }) {
 
       <Tabs value={tab} onChange={setTab} tabs={[
         { value: "perf", label: "Performance" },
+        { value: "risk", label: "Risque & relatif" },
         { value: "alloc", label: "Positions & allocation", count: r.positions.length },
-        { value: "decisions", label: "Décisions", count: r.decision_count },
-        { value: "trades", label: "Transactions", count: r.trades.length },
+        { value: "decisions", label: "Décisions", count: r.counts.decisions },
+        { value: "trades", label: "Transactions", count: r.counts.trades },
         ...(dca ? [{ value: "contrib" as Tab, label: "Versements", count: r.contributions.length }] : []),
         { value: "assumptions", label: "Hypothèses" },
       ]} />
@@ -201,27 +274,39 @@ export function BacktestView({ bt }: { bt: BacktestFull }) {
             <Card title="Performance annuelle"><YearlyBars rows={r.yearly} benchName={bench} /></Card>
           </div>
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
-            <Card title="Indicateurs détaillés" subtitle={`Indice : ${bench}`} pad={false}><div className="overflow-x-auto px-3 pb-3"><MetricsTable s={s} b={b} /></div></Card>
+            <Card title="Indicateurs détaillés" subtitle={`Indice : ${bench}`} pad={false}><div tabIndex={0} className="overflow-x-auto px-3 pb-3"><MetricsTable s={s} b={b} /></div></Card>
             <Card title="Rendements mensuels"><MonthlyHeatmap rows={r.monthly_returns} yearly={r.yearly} /></Card>
           </div>
         </div>
       )}
 
+      {tab === "risk" && <RiskAnalysis bt={bt} bench={bench} dca={dca} />}
+
       {tab === "alloc" && (
         <div className="space-y-6">
+          {r.positions.length > 0 && (
+            <Card title={`Répartition au ${date(r.effective_period.end)}`} subtitle="Poids des lignes et des liquidités en fin de simulation">
+              <AllocationDonut items={r.positions.map((p) => ({ symbol: p.symbol, name: p.name, value: p.value }))} cash={(s.final_value ?? 0) - r.positions.reduce((x, p) => x + p.value, 0)} />
+            </Card>
+          )}
           <Card title="Allocation dans le temps" subtitle="Poids de chaque ligne en début de mois (7 principales lignes, le reste regroupé)">
             <AllocationChart history={r.allocation_history} names={r.names} />
           </Card>
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
             <Card title={`Positions au ${date(r.effective_period.end)}`} pad={false}>
               {r.positions.length === 0 ? <p className="px-6 pb-6 text-sm text-muted">Portefeuille entièrement en liquidités en fin de période.</p> : (
-                <div className="overflow-x-auto px-3 pb-3">
+                <div tabIndex={0} className="overflow-x-auto px-3 pb-3">
                   <table className="table-base">
                     <thead><tr><th>Actif</th><th className="text-right">Poids</th><th className="text-right">Valeur</th><th className="text-right">PRU</th><th className="text-right">Cours</th><th className="text-right">+/- latente</th></tr></thead>
                     <tbody>
                       {r.positions.map((p) => (
                         <tr key={p.symbol}>
-                          <td><div className="font-medium">{p.name}</div><div className="text-xs text-muted">{p.symbol} · {num(p.qty, p.qty % 1 ? 3 : 0)} titres</div></td>
+                          <td>
+                            <button type="button" className="group text-left" onClick={() => setAsset(p.symbol)} title="Voir l'historique de cet actif">
+                              <div className="font-medium group-hover:text-accent group-hover:underline">{p.name}</div>
+                              <div className="text-xs text-muted">{p.symbol} · {num(p.qty, p.qty % 1 ? 3 : 0)} titres</div>
+                            </button>
+                          </td>
                           <td className="num text-right">{pct(p.weight)}</td>
                           <td className="num text-right">{eur(p.value)}</td>
                           <td className="num text-right text-ink2">{num(p.avg_cost)}</td>
@@ -252,14 +337,22 @@ export function BacktestView({ bt }: { bt: BacktestFull }) {
       )}
 
       {tab === "decisions" && (
-        <Card title="Journal des décisions" subtitle="Chaque évaluation de la stratégie, actif par actif, avec la raison et les indicateurs utilisés. Cliquez une ligne pour voir les valeurs.">
-          <DecisionExplorer id={bt.id} names={r.names} />
+        <Card title="Journal des décisions" subtitle="Chaque évaluation de la stratégie, actif par actif. Ouvrez une ligne pour voir les mesures, les seuils de la règle et les ordres exécutés ; cliquez un actif pour son historique complet.">
+          <DecisionExplorer bt={bt} names={r.names} onAsset={setAsset} />
         </Card>
       )}
-      {tab === "trades" && <Card title="Transactions simulées"><TradesTable r={r} id={bt.id} /></Card>}
+      {tab === "trades" && (
+        <div className="space-y-6">
+          <Card title="Chronologie des ordres" subtitle="Montants achetés (au-dessus de zéro) et vendus (en dessous) à chaque date d'exécution">
+            <TradeTimeline id={bt.id} names={r.names} onAsset={setAsset} />
+          </Card>
+          <Card title="Transactions simulées" subtitle="« Pourquoi ? » ouvre la décision qui a déclenché l'ordre"><TradesTable bt={bt} r={r} onAsset={setAsset} /></Card>
+        </div>
+      )}
+      <AssetStory bt={bt} symbol={asset} names={r.names} onClose={() => setAsset(null)} />
       {tab === "contrib" && (
         <Card title="Historique des versements" actions={<a className="btn-ghost h-8 text-xs" href={exportUrl(bt.id, "contributions")}><Download size={14} /> CSV</a>} pad={false}>
-          <div className="max-h-[560px] overflow-auto px-3 pb-3">
+          <div tabIndex={0} className="max-h-[560px] overflow-auto px-3 pb-3">
             <table className="table-base">
               <thead className="sticky top-0 bg-surface"><tr><th>Date</th><th className="text-right">Versement</th><th className="text-right">Cumul versé</th><th className="text-right">Valeur du portefeuille</th><th className="text-right">+/- latente</th></tr></thead>
               <tbody>
@@ -337,7 +430,7 @@ export function BacktestPage() {
   return (
     <>
       <PageHeader
-        eyebrow={<span className="flex items-center gap-2"><Link to="/backtests" className="hover:text-ink">Backtests</Link><span>·</span><Link to={`/strategies/${bt.strategy_id}`} className="hover:text-ink">{bt.strategy_name} v{bt.strategy_version}</Link></span>}
+        eyebrow={<span className="flex flex-wrap items-center gap-2"><SourceBadge kind="simulated" title="Rejeu de la stratégie sur données historiques réelles" /><Link to="/backtests" className="hover:text-ink">Backtests</Link><span>·</span><Link to={`/strategies/${bt.strategy_id}`} className="hover:text-ink">{bt.strategy_name} v{bt.strategy_version}</Link></span>}
         title={bt.name}
         description={<>Lancé le {dateTime(bt.created_at)} {bt.status !== "done" && <Badge className={STATUS[bt.status].cls}>{STATUS[bt.status].label}</Badge>}</>}
         actions={bt.status === "done" && (
@@ -351,8 +444,11 @@ export function BacktestPage() {
       {(bt.status === "queued" || bt.status === "running") && (
         <div className="card flex flex-col items-center gap-3 px-6 py-20 text-center">
           <Spinner className="h-6 w-6" />
-          <div className="font-medium">{bt.status === "queued" ? "En file d'attente…" : "Simulation en cours…"}</div>
-          <p className="max-w-md text-sm text-muted">Mise à jour des cours, puis rejeu jour par jour de la stratégie. Quelques secondes à une minute selon la période et la fréquence.</p>
+          <div className="font-medium">{bt.status === "queued" ? "En file d'attente…" : bt.progress_message ?? "Simulation en cours…"}</div>
+          <div className="h-1.5 w-full max-w-sm overflow-hidden rounded-full bg-raised" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round((bt.progress ?? 0) * 100)}>
+            <div className="h-full rounded-full bg-accent transition-[width] duration-500" style={{ width: `${Math.max(3, (bt.progress ?? 0) * 100)}%` }} />
+          </div>
+          <p className="max-w-md text-sm text-muted">Calcul exécuté en arrière-plan : vous pouvez quitter cette page, le résultat sera conservé.</p>
         </div>
       )}
       {bt.status === "failed" && <ErrorNote error={bt.error ?? "Échec du backtest"} />}

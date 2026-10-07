@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, RefreshCw, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ValueChart } from "../components/charts";
-import { Badge, Card, ErrorNote, Loading, PageHeader, Segmented, toast } from "../components/ui";
+import { Badge, Card, ErrorNote, Loading, PageHeader, Segmented, SourceBadge, toast } from "../components/ui";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { date, dateTime } from "../lib/format";
@@ -38,7 +38,7 @@ export function MarketsPage() {
   if (q.isLoading) return <Loading />;
   return (
     <>
-      <PageHeader eyebrow="Marchés" title="Données de marché"
+      <PageHeader eyebrow={<span className="flex items-center gap-2">Marchés <SourceBadge kind="real" title="Cours quotidiens Yahoo Finance, datés et historisés" /></span>} title="Données de marché"
         description="Cours quotidiens ajustés (dividendes et opérations sur titres) issus de Yahoo Finance, mis en cache et rafraîchis automatiquement." />
       <div className="grid gap-6 xl:grid-cols-[380px_1fr]">
         <Card pad={false}>

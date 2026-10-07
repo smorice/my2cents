@@ -8,18 +8,31 @@ portefeuilles (DCA inclus) sur données historiques réelles. Servi sur **https:
 ## Architecture
 
 ```
+Fournisseur de données (Yahoo…) → Service de données de marché → cours normalisés, datés et sourcés (Postgres)
+        → Moteur de backtest → Stratégie → Simulation de portefeuille → Analytics → API → UI
+```
+
+```
 backend/app
-├── main.py            FastAPI, monté sous /my2cents (API sous /my2cents/api, SPA servie à côté)
-├── bootstrap.py       création du schéma, triggers append-only, rôles, modèles de stratégies, admin initial
-├── models.py          utilisateurs, rôles, sessions, audit, stratégies + versions, backtests, portefeuilles, cours
+├── main.py            FastAPI, monté sous /my2cents (API sous /my2cents/api, SPA servie à côté) ; logs JSON, X-Request-ID
+├── worker.py          processus séparé (python -m app.worker) : exécute les jobs, relance les jobs abandonnés,
+│                      planifie le rafraîchissement des cours
+├── jobs.py            file de jobs Postgres (FOR UPDATE SKIP LOCKED), progression, heartbeat, reprise après crash
+├── bootstrap.py       schéma + migrations (verrou consultatif partagé API/worker), triggers append-only, seed
+├── migrations.py      migrations ordonnées et idempotentes (table schema_migrations)
+├── models.py          utilisateurs, rôles, sessions, audit, stratégies + versions, backtests + décisions /
+│                      transactions / positions, portefeuilles, jobs, instruments, cours, benchmarks, erreurs
 ├── rbac.py            catalogue explicite des permissions et rôles par défaut
 ├── audit.py           journal chaîné SHA-256 (+ vérification d'intégrité)
-├── runner.py          exécution des backtests hors requête (pool de threads), hypothèses affichées
-├── routers/           auth, admin+audit, strategies, backtests, portfolios, market+dashboard
+├── observability.py   logs structurés, corrélation requête/job, erreurs applicatives enregistrées (app_errors)
+├── runner.py          service backtest : configuration figée, mise en file, exécution dans le worker, hypothèses
+├── results.py         stockage ligne à ligne des décisions, transactions et positions finales
+├── routers/           auth, admin+audit, strategies, backtests, portfolios, market+dashboard, jobs
+├── marketdata/        providers.py (interface + Yahoo), service.py (synchro, fraîcheur, panels), catalog.py (univers, indices)
 └── engine/            moteur pur, sans dépendance web ni base
-    ├── backtester.py  boucle quotidienne : exécution à l'ouverture, versements, clôture, signaux
+    ├── backtester.py  boucle quotidienne : exécution à l'ouverture, versements, clôture, signaux ; chaque
+    │                  transaction référence la décision qui l'a déclenchée
     ├── metrics.py     CAGR, TWR, TRI, volatilité, Sharpe, Sortino, drawdown, bêta/alpha, …
-    ├── data.py        Yahoo Finance → cache Postgres, univers prédéfinis
     └── strategies/    Buy & Hold, Momentum, Moyenne mobile, Golden Cross, Retour à la moyenne,
                        Force relative, Surperformance vs indice, Allocation fixe
 frontend/              React + Vite + TypeScript + Tailwind + React Query + Recharts
@@ -35,12 +48,28 @@ frontend/              React + Vite + TypeScript + Tailwind + React Query + Rech
 - **Biais du survivant** : l'univers CAC 40 est la composition récente ; c'est indiqué dans chaque backtest.
 - Chaque backtest fige la version de stratégie et sa configuration complète → reproductible.
 
+## Parcours et écrans
+
+Landing publique (avec une vraie simulation sur données historiques) → inscription → onboarding en 5 étapes →
+tableau de bord (« Comment mes stratégies auraient-elles performé ? », périodes 1M→MAX). Ensuite : Research
+(familles de stratégies), bibliothèque de stratégies (versions, fiche, risques), laboratoire `/backtests/new`,
+rapport de backtest (performance, risque glissant, allocation, décisions expliquées, transactions, versements,
+hypothèses), Strategy Lab `/compare`, portefeuilles simulés, transactions, activité personnelle `/audit`.
+Administration `/admin` : vue d'ensemble, tâches (relance / annulation), erreurs, données de marché, stratégies,
+utilisateurs, rôles, journal d'audit.
+
+Chaque décision simulée porte une explication structurée (mesures, seuils de la règle, verdict) et chaque
+transaction référence la décision qui l'a déclenchée.
+
 ## Sécurité et traçabilité
 
 - Mots de passe Argon2, politique de robustesse, verrouillage après 5 échecs, limitation par IP.
 - Sessions serveur (cookie HttpOnly, Secure, SameSite=Strict), expiration d'inactivité et absolue, révocables.
 - MFA TOTP optionnelle. En-tête anti-CSRF obligatoire sur toute requête d'écriture. CSP stricte.
 - RBAC : `USER`, `ADMIN`, `RESEARCHER`, `AUDITOR`, `READ_ONLY` ; rôles personnalisés via l'admin.
+- Limitation de débit par IP sur toute l'API (lectures / écritures), quota de simulations actives par utilisateur.
+- Erreurs inattendues : l'utilisateur reçoit une référence, l'administrateur la trace complète (`/admin/errors`).
+- Accessibilité vérifiée avec axe-core (WCAG 2.2 AA) sur les pages principales, thèmes clair et sombre.
 - Audit : tables `audit_events` et `strategy_versions` protégées par triggers (UPDATE/DELETE/TRUNCATE interdits),
   événements chaînés par empreinte SHA-256 vérifiable depuis l'interface.
 
@@ -49,8 +78,12 @@ frontend/              React + Vite + TypeScript + Tailwind + React Query + Rech
 ```bash
 cp .env.example .env    # puis renseigner les secrets
 docker compose up -d --build
-docker compose logs -f app
+docker compose logs -f app worker
 ```
+
+Deux services applicatifs partagent la même image : `app` (API + SPA) et `worker` (calculs). Un backtest lancé depuis
+l'interface crée un job ; le worker le traite et publie sa progression (`GET /api/jobs/{id}`). Arrêter ou redéployer
+le worker ne perd rien : un job sans heartbeat depuis 2 minutes est relancé une fois, puis marqué en échec.
 
 Le conteneur `app` rejoint le réseau externe `nayonne_proxy_net` sous l'alias `my2cents-app` ; le Caddyfile
 (`/home/ubuntu/robin/infra/caddy/Caddyfile`) route `/my2cents*` vers `my2cents-app:8000`.

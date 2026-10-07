@@ -1,7 +1,7 @@
 import clsx from "clsx";
 import {
-  BarChart3, Briefcase, FlaskConical, GitCompareArrows, LayoutDashboard, LineChart, LogOut, Menu, Moon, ScrollText,
-  Settings, ShieldCheck, Sun, Users, X,
+  Activity, AlertTriangle, ArrowLeftRight, BarChart3, BookOpen, Briefcase, Cpu, Database, FlaskConical, GitCompareArrows, Gauge,
+  LayoutDashboard, LineChart, Library, LogOut, Menu, Moon, ScrollText, Settings, ShieldCheck, Sun, Users, X,
 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
@@ -13,13 +13,21 @@ interface Item { to: string; label: string; icon: ReactNode; perm?: string; end?
 
 const MAIN: Item[] = [
   { to: "/", label: "Tableau de bord", icon: <LayoutDashboard size={17} />, end: true },
-  { to: "/strategies", label: "Stratégies", icon: <FlaskConical size={17} />, perm: "strategy:read" },
-  { to: "/backtests", label: "Backtests", icon: <BarChart3 size={17} />, perm: "backtest:read" },
-  { to: "/compare", label: "Comparer", icon: <GitCompareArrows size={17} />, perm: "backtest:read" },
+  { to: "/research", label: "Research", icon: <BookOpen size={17} />, perm: "strategy:read" },
+  { to: "/strategies", label: "Stratégies", icon: <Library size={17} />, perm: "strategy:read" },
+  { to: "/backtests/new", label: "Laboratoire", icon: <FlaskConical size={17} />, perm: "backtest:run" },
+  { to: "/backtests", label: "Backtests", icon: <BarChart3 size={17} />, perm: "backtest:read", end: true },
+  { to: "/compare", label: "Strategy Lab", icon: <GitCompareArrows size={17} />, perm: "backtest:read" },
   { to: "/portfolios", label: "Portefeuilles", icon: <Briefcase size={17} />, perm: "portfolio:read" },
+  { to: "/transactions", label: "Transactions", icon: <ArrowLeftRight size={17} />, perm: "backtest:read" },
   { to: "/markets", label: "Marchés", icon: <LineChart size={17} />, perm: "market:read" },
 ];
 const ADMIN: Item[] = [
+  { to: "/admin", label: "Vue d'ensemble", icon: <Gauge size={17} />, perm: "system:read", end: true },
+  { to: "/admin/jobs", label: "Tâches", icon: <Cpu size={17} />, perm: "job:admin" },
+  { to: "/admin/errors", label: "Erreurs", icon: <AlertTriangle size={17} />, perm: "system:read" },
+  { to: "/admin/providers", label: "Données de marché", icon: <Database size={17} />, perm: "system:read" },
+  { to: "/admin/strategies", label: "Toutes les stratégies", icon: <FlaskConical size={17} />, perm: "system:read" },
   { to: "/admin/users", label: "Utilisateurs", icon: <Users size={17} />, perm: "user:admin" },
   { to: "/admin/roles", label: "Rôles & permissions", icon: <ShieldCheck size={17} />, perm: "role:admin" },
   { to: "/admin/audit", label: "Journal d'audit", icon: <ScrollText size={17} />, perm: "audit:read" },
@@ -57,6 +65,7 @@ function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         )}
       </nav>
       <div className="space-y-0.5 border-t border-line px-3 py-3">
+        <NavItem item={{ to: "/audit", label: "Mon activité", icon: <Activity size={17} /> }} />
         <NavItem item={{ to: "/settings", label: "Paramètres", icon: <Settings size={17} /> }} />
         <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
           className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-ink2 hover:bg-raised/60 hover:text-ink">

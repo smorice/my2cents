@@ -1,8 +1,9 @@
 """End-to-end API tests. Need a throwaway Postgres in MY2CENTS_DATABASE_URL."""
 
 import os
+import threading
 import time
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -19,9 +20,10 @@ os.environ.setdefault("MY2CENTS_STATIC_DIR", "/nonexistent")
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
+from app import jobs, migrations, ratelimit, runner, worker  # noqa: E402
 from app.db import Base, SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import Instrument, PriceBar, utcnow  # noqa: E402
+from app.models import AppError, Backtest, BacktestDecision, Instrument, Job, PriceBar, utcnow  # noqa: E402
 
 API = "/my2cents/api"
 H = {"x-my2cents-csrf": "1"}
@@ -32,9 +34,22 @@ PW = "Correct-Horse-42"
 def client():
     with engine.begin() as c:
         c.execute(text("DROP SCHEMA public CASCADE; CREATE SCHEMA public;"))
+    stop = threading.Event()
+    ratelimit.LIMITS.update(read=100_000, write=100_000)  # polling loops below would trip the real limits
     with TestClient(app) as tc:
         _seed_prices()
+        worker.start(stop, concurrency=2, idle=0.05, refresh=False)
         yield tc
+    stop.set()
+
+
+def _wait_backtest(c, bid):
+    for _ in range(200):
+        bt = c.get(f"{API}/backtests/{bid}").json()
+        if bt["status"] in ("done", "failed"):
+            return bt
+        time.sleep(0.1)
+    raise AssertionError(f"backtest stuck: {bt['status']}")
 
 
 def _seed_prices():
@@ -130,18 +145,47 @@ def test_strategy_versioning_and_backtest(client):
     })
     assert r.status_code == 202, r.text
     bid = r.json()["id"]
-    for _ in range(120):
-        bt = client.get(f"{API}/backtests/{bid}").json()
-        if bt["status"] in ("done", "failed"):
-            break
-        time.sleep(0.25)
+    assert r.json()["job_id"]
+    bt = _wait_backtest(client, bid)
     assert bt["status"] == "done", bt.get("error")
+    job = client.get(f"{API}/jobs/{r.json()['job_id']}").json()
+    assert job["status"] == "completed" and job["progress"] == 1.0
     res = bt["results"]
     assert res["summary"]["strategy"]["total_invested"] > 10000
     assert len(res["contributions"]) > 40
     assert any("biais" in a.lower() or "anticipation" in a.lower() for a in res["assumptions"])
+    assert "decisions" not in res and "trades" not in res
     dec = client.get(f"{API}/backtests/{bid}/decisions", params={"action": "buy"}).json()
     assert dec["total"] > 0 and "écart" in dec["items"][0]["reason"]
+    assert dec["items"][0]["date"] >= dec["items"][-1]["date"]  # newest first
+    # Every strategy-driven order points back at the decision that caused it.
+    tx = client.get(f"{API}/backtests/{bid}/transactions", params={"page_size": 500}).json()
+    assert tx["total"] == res["summary"]["strategy"]["trades"]
+    linked = [t for t in tx["items"] if t["decision_seq"] is not None]
+    assert linked
+    t0 = linked[0]
+    d0 = client.get(f"{API}/backtests/{bid}/decisions", params={"seq": t0["decision_seq"]}).json()["items"][0]
+    assert d0["symbol"] == t0["symbol"] and d0["date"] < t0["date"]
+    assert d0["action"] in (("buy", "increase") if t0["side"] == "buy" else ("sell", "decrease"))
+    assert all(t["decision_seq"] is None for t in tx["items"] if t["reason"].startswith("Investissement du versement"))
+    # Structured explanation: asset vs benchmark, outperformance, and the threshold it had to clear.
+    ex = dec["items"][0]["explain"]
+    assert [f.get("subject") for f in ex["facts"]][:2] == ["asset", "benchmark"]
+    entry = next(c for c in ex["checks"] if c["label"].startswith("Seuil d'entrée"))
+    assert entry["passed"] and entry["threshold"] == pytest.approx(0.03) and entry["value"] >= 0.03
+    asset = client.get(f"{API}/backtests/{bid}/assets/{t0['symbol']}").json()
+    assert len(asset["dates"]) == len(asset["price"]) == len(asset["benchmark_price"]) and asset["trades"]
+    assert {d["action"] for d in asset["decisions"]} <= {"buy", "sell", "increase", "decrease"}
+    tl = client.get(f"{API}/backtests/{bid}/timeline").json()
+    assert sum(len(x["buys"]) for x in tl) >= 1 and tl == sorted(tl, key=lambda x: x["date"])
+    assert client.get(f"{API}/backtests/{bid}/assets/NOPE").status_code == 404
+    an = client.get(f"{API}/backtests/{bid}/analytics").json()
+    assert len(an["dates"]) == len(an["sharpe"]) and 0 <= an["win_rate"] <= 1
+    w = client.get(f"{API}/backtests/{bid}/window", params={"period": "1Y"}).json()
+    assert w["strategy"][0] == 100 and w["metrics"]["volatility"] > 0
+    dash = client.get(f"{API}/dashboard/performance", params={"period": "3Y"}).json()
+    assert dash["focus"] == bid and dash["items"][0]["values"][0] == 100 and "win_rate" in dash["items"][0]
+    assert client.get(f"{API}/dashboard/performance", params={"period": "2W"}).status_code == 422
     assert client.get(f"{API}/backtests/{bid}/export/trades.csv").status_code == 200
     cmp_ = client.get(f"{API}/backtests/compare", params={"ids": bid}).json()
     assert cmp_[0]["series"]["twr"]
@@ -162,11 +206,11 @@ def test_portfolio_simulation(client):
     })
     assert r.status_code == 201, r.text
     pid = r.json()["id"]
-    for _ in range(120):
+    for _ in range(200):
         p = client.get(f"{API}/portfolios/{pid}").json()
         if p["latest_simulation"]["status"] in ("done", "failed"):
             break
-        time.sleep(0.25)
+        time.sleep(0.1)
     assert p["latest_simulation"]["status"] == "done", p["latest_simulation"]
     assert p["latest_simulation"]["summary"]["total_invested"] == pytest.approx(500 * 36, rel=0.05)
 
@@ -179,3 +223,162 @@ def test_admin_role_change_is_audited(client):
     ev = client.get(f"{API}/audit", params={"action": "user.permissions_change"}).json()["items"][0]
     assert ev["before"]["roles"] == ["USER"] and ev["after"]["roles"] == ["AUDITOR", "USER"]
     assert client.get(f"{API}/audit/verify").json()["valid"] is True
+
+
+def test_portfolio_benchmark_override(client):
+    _login(client, "alice@example.com")
+    sid = next(s["id"] for s in client.get(f"{API}/strategies").json() if s["name"] == "Mine")
+    r = client.post(f"{API}/portfolios", headers=H, json={
+        "name": "Bench", "strategy_id": sid, "benchmark": "NOPE.XX",
+        "settings": {"start": "2021-01-01", "end": "2023-12-31", "initial_capital": 1000},
+    })
+    assert r.status_code == 422
+    r = client.post(f"{API}/portfolios", headers=H, json={
+        "name": "Bench", "strategy_id": sid, "benchmark": "AAA.PA",
+        "settings": {"start": "2021-01-01", "end": "2023-12-31", "initial_capital": 1000},
+    })
+    assert r.status_code == 201, r.text
+    assert r.json()["benchmark"] == "AAA.PA" and r.json()["currency"] == "EUR"
+    bt = _wait_backtest(client, r.json()["latest_simulation"]["id"])
+    assert bt["config"]["benchmark"] == "AAA.PA"
+
+
+def test_job_failure_is_explained_without_internals(client):
+    _login(client, "alice@example.com")
+    sid = next(s["id"] for s in client.get(f"{API}/strategies").json() if s["name"] == "Mine")
+    # Period with no market data at all: an expected, user-facing failure.
+    r = client.post(f"{API}/backtests", headers=H, json={"strategy_id": sid, "start": "2010-01-01", "end": "2011-01-01"})
+    bt = _wait_backtest(client, r.json()["id"])
+    assert bt["status"] == "failed" and "Pas de données" in bt["error"]
+    job = client.get(f"{API}/jobs/{r.json()['job_id']}").json()
+    assert job["status"] == "failed" and "internal_error" not in job
+    _login(client, "admin@example.com", "Admin-Password-123")
+    assert client.get(f"{API}/jobs/{r.json()['job_id']}").status_code == 404  # not the owner
+
+
+def test_stale_jobs_are_requeued_then_failed(client):
+    ran = []
+    jobs.HANDLERS["test_noop"] = lambda job, report: ran.append(job.id)
+    old = utcnow() - timedelta(minutes=10)
+    with SessionLocal() as db:
+        retry = Job(kind="test_noop", status="running", attempts=1, heartbeat_at=old, payload={})
+        dead = Job(kind="test_noop", status="running", attempts=jobs.MAX_ATTEMPTS, heartbeat_at=old, payload={})
+        db.add_all([retry, dead])
+        db.commit()
+        retry_id, dead_id = retry.id, dead.id
+    assert jobs.recover_stale() >= 2
+    for _ in range(100):
+        with SessionLocal() as db:
+            if db.get(Job, retry_id).status == "completed":
+                break
+        time.sleep(0.05)
+    with SessionLocal() as db:
+        assert db.get(Job, retry_id).status == "completed" and db.get(Job, retry_id).attempts == 2
+        d = db.get(Job, dead_id)
+        assert d.status == "failed" and "interrompu" in d.user_error
+    assert ran == [retry_id]
+
+
+def test_unhandled_errors_are_recorded_not_leaked(client):
+    def boom():
+        raise RuntimeError("secret internal detail")
+
+    app.add_api_route("/__boom", boom)
+    r = client.get("/__boom")
+    assert r.status_code == 500
+    assert "secret" not in r.text and r.json()["ref"] == r.headers["x-request-id"]
+    with SessionLocal() as db:
+        err = db.query(AppError).filter(AppError.request_id == r.json()["ref"]).one()
+        assert err.message == "secret internal detail" and "RuntimeError" in err.traceback
+
+
+def test_legacy_results_are_normalised(client):
+    with SessionLocal() as db:
+        bt = db.query(Backtest).filter(Backtest.status == "done").first()
+        db.query(BacktestDecision).filter(BacktestDecision.backtest_id == bt.id).delete()
+        bt.results = {**bt.results, "decisions": [
+            {"date": "2021-01-04", "symbol": "AAA.PA", "action": "buy", "prev_weight": 0, "target_weight": 0.5, "reason": "x", "metrics": {}},
+        ], "trades": [], "positions": []}
+        db.commit()
+        with engine.begin() as conn:
+            migrations._normalise_results(conn)
+        db.expire_all()
+        assert "decisions" not in db.get(Backtest, bt.id).results
+        assert db.query(BacktestDecision).filter(BacktestDecision.backtest_id == bt.id).count() == 1
+
+
+def test_admin_system_views_and_permissions(client):
+    client.cookies.clear()
+    client.post(f"{API}/auth/register", json={"email": "carol@example.com", "display_name": "Carol", "password": PW}, headers=H)
+    for path in ("/admin/overview", "/admin/jobs", "/admin/errors", "/admin/providers", "/admin/strategies"):
+        assert client.get(f"{API}{path}").status_code == 403, path
+    _login(client, "alice@example.com")  # AUDITOR since test_admin_role_change: may read the system state, not manage jobs
+    assert client.get(f"{API}/admin/overview").status_code == 200
+    assert client.get(f"{API}/admin/jobs").status_code == 403
+    mine = client.get(f"{API}/audit/me").json()
+    assert mine["total"] > 0 and all(e["actor_email"] == "alice@example.com" for e in mine["items"])
+    tx = client.get(f"{API}/transactions", params={"page_size": 5}).json()
+    assert tx["total"] > 0 and tx["items"][0]["backtest_name"] and tx["sources"]
+
+    _login(client, "admin@example.com", "Admin-Password-123")
+    ov = client.get(f"{API}/admin/overview").json()
+    assert ov["backtests"]["total"] >= 2 and "completed" in ov["jobs"]["by_status"]
+    jl = client.get(f"{API}/admin/jobs", params={"status": "failed", "kind": "backtest"}).json()
+    failed = jl["items"][0]
+    assert failed["internal_error"] and failed["owner_email"] == "alice@example.com"
+    r = client.post(f"{API}/admin/jobs/{failed['id']}/retry", headers=H)
+    assert r.status_code == 200 and r.json()["status"] in ("queued", "running", "failed")
+    assert client.post(f"{API}/admin/jobs/{failed['id']}/cancel", headers=H).status_code in (200, 409)
+    assert client.get(f"{API}/admin/errors").json()["total"] >= 1
+    prov = client.get(f"{API}/admin/providers").json()
+    assert prov["providers"][0]["name"] == "yahoo" and prov["instruments"]
+    assert any(e["action"] == "job.retry" for e in client.get(f"{API}/audit", params={"action": "job."}).json()["items"])
+    assert client.post(f"{API}/admin/market/sync", headers=H, json=["BAD SYMBOL;"]).status_code == 422
+    r = client.post(f"{API}/admin/market/sync", headers=H, json=["AAA.PA"])
+    assert r.status_code == 202 and r.json()["payload"]["symbols"] == ["AAA.PA"]
+    assert any(e["action"] == "market.sync_all" for e in client.get(f"{API}/audit", params={"action": "market."}).json()["items"])
+
+
+def test_public_showcase_needs_no_login(client):
+    client.cookies.clear()
+    r = client.get(f"{API}/public/showcase")
+    # The test database has no CW8.PA history: the endpoint says so instead of inventing data.
+    assert r.status_code == 503
+
+
+def test_rate_limit_returns_429_with_retry_after(client):
+    saved = dict(ratelimit.LIMITS)
+    ratelimit.reset()
+    ratelimit.LIMITS.update(read=5, write=2)
+    try:
+        codes = [client.get(f"{API}/auth/config").status_code for _ in range(7)]
+        assert codes[:5] == [200] * 5 and codes[5] == 429
+        r = client.get(f"{API}/auth/config")
+        assert int(r.headers["retry-after"]) >= 1 and "patientez" in r.json()["detail"]
+        assert client.get(f"{API}/health").status_code == 200  # never limited
+    finally:
+        ratelimit.LIMITS.update(saved)
+        ratelimit.reset()
+
+
+def test_active_backtest_quota(client, monkeypatch):
+    _login(client, "carol@example.com")
+    sid = next(s["id"] for s in client.get(f"{API}/strategies").json() if s["is_template"])
+    monkeypatch.setattr(runner, "MAX_ACTIVE_PER_USER", 0)
+    r = client.post(f"{API}/backtests", headers=H, json={"strategy_id": sid, "start": "2020-01-01", "end": "2021-01-01"})
+    assert r.status_code == 429 and "simulations en cours" in r.json()["detail"]
+
+
+def test_other_users_cannot_reach_any_backtest_output(client):
+    _login(client, "alice@example.com")
+    bid = next(b["id"] for b in client.get(f"{API}/backtests", params={"status": "done"}).json()["items"])
+    job_id = client.get(f"{API}/backtests/{bid}").json()["job_id"]
+    sym = client.get(f"{API}/backtests/{bid}/transactions").json()["items"][0]["symbol"]
+    _login(client, "carol@example.com")
+    for path in ("", "/decisions", "/transactions", "/timeline", "/analytics", "/window", f"/assets/{sym}", "/export/trades.csv"):
+        assert client.get(f"{API}/backtests/{bid}{path}").status_code == 404, path
+    assert client.get(f"{API}/jobs/{job_id}").status_code == 404
+    assert client.get(f"{API}/transactions", params={"backtest_id": bid}).json()["total"] == 0
+    assert client.get(f"{API}/backtests/compare", params={"ids": bid}).status_code == 404
+    assert client.delete(f"{API}/backtests/{bid}", headers=H).status_code in (403, 404)
+    assert client.get(f"{API}/dashboard/performance", params={"focus": bid}).json()["items"] == []

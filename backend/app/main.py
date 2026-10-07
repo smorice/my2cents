@@ -1,5 +1,5 @@
 import logging
-import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -7,30 +7,29 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import bootstrap, runner
+from . import audit, bootstrap, ratelimit
 from .config import get_settings
 from .deps import csrf_guard
-from .routers import admin, auth, backtests, market, portfolios, strategies
+from .observability import new_request_id, record_error, request_id_var, setup_logging, user_id_var
+from .routers import admin, auth, backtests, jobs, market, portfolios, strategies, system
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+setup_logging()
+log = logging.getLogger("app.http")
 settings = get_settings()
 BASE = settings.base_path.rstrip("/")
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    bootstrap.init_db()
-    bootstrap.seed()
-    runner.recover_interrupted()
-    if os.environ.get("MY2CENTS_DISABLE_REFRESH") != "1":
-        bootstrap.start_market_refresher()
+    # Long-running work (backtests, market data refresh) lives in the worker process.
+    bootstrap.prepare()
     yield
 
 
 app = FastAPI(title="My2cents", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=f"{BASE}/api/openapi.json")
 
 api = APIRouter(prefix=f"{BASE}/api", dependencies=[Depends(csrf_guard)])
-for r in (auth.router, admin.router, strategies.router, backtests.router, portfolios.router, market.router):
+for r in (auth.router, admin.router, strategies.router, backtests.router, portfolios.router, market.router, jobs.router, system.router):
     api.include_router(r)
 
 
@@ -54,7 +53,31 @@ CSP = (
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
-    response = await call_next(request)
+    rid = new_request_id()
+    request_id_var.set(rid)
+    user_id_var.set(None)
+    started = time.perf_counter()
+    wait = None
+    if request.url.path.startswith(f"{BASE}/api") and request.url.path != f"{BASE}/api/health":
+        wait = ratelimit.check(audit.client_ip(request) or "?", request.method)
+    try:
+        if wait is not None:
+            log.warning("rate limited", extra={"path": request.url.path, "ip": audit.client_ip(request)})
+            response = JSONResponse(status_code=429, headers={"Retry-After": str(int(wait) + 1)},
+                                    content={"detail": "Trop de requêtes en peu de temps : patientez quelques secondes."})
+        else:
+            response = await call_next(request)
+    except Exception as exc:  # noqa: BLE001 - last resort: never leak internals to the client
+        ref = record_error(exc, source="api", method=request.method, path=request.url.path, request_id=rid,
+                           user_id=getattr(request.state, "user_id", None))
+        response = JSONResponse(status_code=500, content={
+            "detail": f"Erreur interne inattendue. Référence : {ref}. L'administrateur a été informé.", "ref": ref})
+    if request.url.path.startswith(f"{BASE}/api"):
+        log.info("request", extra={
+            "method": request.method, "path": request.url.path, "status": response.status_code,
+            "duration_ms": round((time.perf_counter() - started) * 1000, 1), "user_id": getattr(request.state, "user_id", None),
+        })
+    response.headers["X-Request-ID"] = rid
     response.headers.setdefault("Content-Security-Policy", CSP)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "same-origin")

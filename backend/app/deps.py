@@ -9,6 +9,7 @@ from . import audit
 from .config import get_settings
 from .db import get_db
 from .models import User, UserSession, utcnow
+from .observability import user_id_var
 from .rbac import Perm
 from .security import token_digest
 
@@ -58,7 +59,10 @@ def get_session(sess: UserSession = Depends(get_session_any)) -> UserSession:
     return sess
 
 
-def current_user(sess: UserSession = Depends(get_session)) -> User:
+def current_user(request: Request, sess: UserSession = Depends(get_session)) -> User:
+    # Correlates logs / recorded errors with the user (read back by the request middleware).
+    request.state.user_id = str(sess.user_id)
+    user_id_var.set(str(sess.user_id))
     return sess.user
 
 

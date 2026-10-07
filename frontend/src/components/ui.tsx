@@ -63,6 +63,17 @@ export function Badge({ children, className }: { children: ReactNode; className?
   return <span className={clsx("chip", className)}>{children}</span>;
 }
 
+/** Says what a figure is made of (spec: real vs simulated vs demo vs awaiting data). Text, not just colour. */
+export function SourceBadge({ kind, title }: { kind: "real" | "simulated" | "demo" | "pending"; title?: string }) {
+  const m = {
+    real: ["Données réelles", "border-pos/30 text-pos"],
+    simulated: ["Simulation", "border-accent/40 text-accent"],
+    demo: ["Démonstration", "border-warn/40 text-warn"],
+    pending: ["En attente de données", "text-muted"],
+  }[kind];
+  return <span className={clsx("chip", m[1])} title={title}>{m[0]}</span>;
+}
+
 export function Spinner({ className }: { className?: string }) {
   return <Loader2 className={clsx("animate-spin text-muted", className)} size={18} />;
 }
@@ -170,7 +181,7 @@ export function Modal({ open, onClose, title, children, wide }: { open: boolean;
   }, [open, onClose]);
   if (!open) return null;
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4 backdrop-blur-sm sm:items-center" onMouseDown={onClose}>
+    <div className={clsx("fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4 backdrop-blur-sm", !wide && "sm:items-center")} onMouseDown={onClose}>
       <div role="dialog" aria-modal="true" onMouseDown={(e) => e.stopPropagation()}
         className={clsx("card my-8 w-full shadow-2xl", wide ? "max-w-3xl" : "max-w-lg")}>
         <div className="flex items-center justify-between border-b border-line px-5 py-4">

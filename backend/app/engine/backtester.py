@@ -13,6 +13,7 @@ a decision can never use a price it could not have known.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
@@ -21,11 +22,22 @@ import numpy as np
 import pandas as pd
 
 from .metrics import compute_metrics, drawdown_series, monthly_returns, yearly_returns
-from .strategies.base import Context, Evaluation, Note, Strategy
+from .strategies.base import Context, Evaluation, Note, Strategy, check, explain, fact
 
 FREQ_KEYS = {"daily", "weekly", "monthly", "quarterly", "yearly", "never"}
 WEIGHT_TOLERANCE = 0.01  # absolute drift (share of portfolio) ignored when re-weighting
 RELATIVE_TOLERANCE = 0.2  # ...or 20 % of the target weight, whichever is larger
+
+
+def _finite(x: Any) -> Any:
+    """JSON-safe copy (NaN / inf become None)."""
+    if isinstance(x, float):
+        return x if math.isfinite(x) else None
+    if isinstance(x, dict):
+        return {k: _finite(v) for k, v in x.items()}
+    if isinstance(x, list):
+        return [_finite(v) for v in x]
+    return x
 
 
 def drifted(cur: float, tgt: float) -> bool:
@@ -204,7 +216,7 @@ class Backtester:
 
     # ------------------------------------------------------------------ execution
 
-    def _sell(self, d: pd.Timestamp, s: str, qty: float, px: float, reason: str) -> None:
+    def _sell(self, d: pd.Timestamp, s: str, qty: float, px: float, reason: str, decision_seq: int | None = None) -> None:
         p = self.pos[s]
         qty = min(qty, p.qty)
         if qty <= 0:
@@ -226,10 +238,10 @@ class Backtester:
         self.totals["turnover"] += gross
         self.trades.append({
             "date": d.date().isoformat(), "symbol": s, "side": "sell", "qty": qty, "price": fill,
-            "value": gross, "fees": fee, "tax": tax, "realized_pnl": realized, "reason": reason,
+            "value": gross, "fees": fee, "tax": tax, "realized_pnl": realized, "reason": reason, "decision_seq": decision_seq,
         })
 
-    def _buy(self, d: pd.Timestamp, s: str, budget: float, px: float, reason: str) -> None:
+    def _buy(self, d: pd.Timestamp, s: str, budget: float, px: float, reason: str, decision_seq: int | None = None) -> None:
         fill = px * (1 + self.c.costs.slippage_bps / 10_000)
         budget = min(budget, self.cash)
         if budget <= 1:
@@ -256,7 +268,7 @@ class Backtester:
         self.totals["turnover"] += gross
         self.trades.append({
             "date": d.date().isoformat(), "symbol": s, "side": "buy", "qty": qty, "price": fill,
-            "value": gross, "fees": fee, "tax": 0.0, "realized_pnl": None, "reason": reason,
+            "value": gross, "fees": fee, "tax": 0.0, "realized_pnl": None, "reason": reason, "decision_seq": decision_seq,
         })
 
     def _execute(self, i: int, order: dict) -> None:
@@ -264,6 +276,7 @@ class Backtester:
         opens = self.open.iloc[i]
         total = self._value(i, self.open_ff)
         reasons = order["reasons"]
+        seqs = order.get("decision_seqs", {})
         if order["type"] == "rebalance":
             targets = order["targets"]
             current = {s: p.qty * opens[s] / total for s, p in self.pos.items() if total > 0 and not math.isnan(opens[s])}
@@ -275,9 +288,9 @@ class Backtester:
                 tgt = targets.get(s, 0.0)
                 cur = current.get(s, 0.0)
                 if tgt == 0:
-                    self._sell(d, s, p.qty, px, reasons.get(s, "Sortie"))
+                    self._sell(d, s, p.qty, px, reasons.get(s, "Sortie"), seqs.get(s))
                 elif cur > tgt and drifted(cur, tgt):
-                    self._sell(d, s, (cur - tgt) * total / px, px, reasons.get(s, "Allègement"))
+                    self._sell(d, s, (cur - tgt) * total / px, px, reasons.get(s, "Allègement"), seqs.get(s))
             for s, tgt in sorted(targets.items(), key=lambda kv: -kv[1]):
                 px = opens.get(s)
                 if px is None or math.isnan(px):
@@ -285,7 +298,7 @@ class Backtester:
                     continue
                 cur = current.get(s, 0.0)
                 if (cur == 0 and tgt > 0) or (tgt > cur and drifted(cur, tgt)):
-                    self._buy(d, s, (tgt - cur) * total, px, reasons.get(s, "Renforcement"))
+                    self._buy(d, s, (tgt - cur) * total, px, reasons.get(s, "Renforcement"), seqs.get(s))
         elif order["type"] == "invest_cash":
             # New cash goes first to the lines furthest below their target weight.
             weights = {s: w for s, w in order["targets"].items() if not math.isnan(opens.get(s, math.nan))}
@@ -306,11 +319,19 @@ class Backtester:
             for s in order["symbols"]:
                 px = opens.get(s)
                 if s in self.pos and px is not None and not math.isnan(px):
-                    self._sell(d, s, self.pos[s].qty, px, reasons.get(s, "Stop-loss"))
+                    self._sell(d, s, self.pos[s].qty, px, reasons.get(s, "Stop-loss"), seqs.get(s))
 
     # ------------------------------------------------------------------ decisions
 
-    def _record_decisions(self, d: pd.Timestamp, ev: Evaluation, weights: dict[str, float], targets: dict[str, float] | None) -> bool:
+    def _add_decision(self, row: dict) -> int:
+        row["seq"] = len(self.decisions)
+        self.decisions.append(row)
+        return row["seq"]
+
+    def _record_decisions(
+        self, d: pd.Timestamp, ev: Evaluation, weights: dict[str, float], targets: dict[str, float] | None
+    ) -> dict[str, int]:
+        """Log the strategy's view of every asset; returns the decision seq of each asset to trade."""
         symbols = set(ev.notes) | set(weights) | set(targets or {})
         rows, any_trade = [], False
         for s in sorted(symbols):
@@ -334,14 +355,21 @@ class Backtester:
                 "date": d.date().isoformat(), "symbol": s, "action": action,
                 "prev_weight": prev, "target_weight": tgt, "reason": note.reason,
                 "metrics": {k: (None if v is None or (isinstance(v, float) and not math.isfinite(v)) else v) for k, v in note.metrics.items()},
+                "explain": _finite(note.explain),
             })
         # Skipped assets are only interesting when the portfolio actually moved.
-        self.decisions.extend(r for r in rows if r["action"] != "skip" or any_trade)
-        return any_trade
+        seqs = {}
+        for r in rows:
+            if r["action"] != "skip" or any_trade:
+                seq = self._add_decision(r)
+                if r["action"] in ("buy", "sell", "increase", "decrease"):
+                    seqs[r["symbol"]] = seq
+        return seqs
 
     # ------------------------------------------------------------------ main loop
 
-    def run(self) -> dict:
+    def run(self, progress: Callable[[float], None] | None = None) -> dict:
+        """Simulate the whole period. `progress` receives the completed share (0..1) now and then."""
         c = self.c
         rebalance_days = _first_days(self.sim_dates, c.rebalance)
         contrib_dates = set()
@@ -372,8 +400,11 @@ class Backtester:
         out_dates, equity, invested_s, flows, bench_eq, cash_w = [], [], [], [], [], []
         last_month = None
 
+        step = max((end_i - start_i) // 50, 1)
         for i in range(start_i, end_i + 1):
             d = self.cal[i]
+            if progress and (i - start_i) % step == 0:
+                progress((i - start_i) / max(end_i - start_i, 1))
             # 1. fills at the open
             for order in pending:
                 self._execute(i, order)
@@ -426,16 +457,21 @@ class Backtester:
                     if not math.isnan(self.close.iloc[i][s]) and self.close.iloc[i][s] < p.avg_cost * (1 - c.risk.stop_loss_pct / 100)
                 ]
                 if hit:
-                    reasons = {}
+                    reasons, seqs = {}, {}
                     for s in hit:
                         loss = self.close.iloc[i][s] / self.pos[s].avg_cost - 1
                         reasons[s] = f"Stop-loss : {loss * 100:+.1f} % sous le prix de revient (seuil −{c.risk.stop_loss_pct:g} %)."
-                        self.decisions.append({
+                        seqs[s] = self._add_decision({
                             "date": d.date().isoformat(), "symbol": s, "action": "sell", "prev_weight": weights.get(s, 0.0),
                             "target_weight": 0.0, "reason": reasons[s], "metrics": {"loss_from_cost": loss},
+                            "explain": explain(
+                                [fact("Prix de revient moyen de {asset}", self.pos[s].avg_cost, "num", subject="asset"),
+                                 fact("Dernier cours", float(self.close.iloc[i][s]), "num"), fact("Variation depuis l'achat", loss, emphasis=True)],
+                                [check("Stop-loss déclenché sous", loss, "<", -c.risk.stop_loss_pct / 100)],
+                            ),
                         })
                         self.targets.pop(s, None)
-                    pending.append({"type": "stop", "symbols": hit, "reasons": reasons})
+                    pending.append({"type": "stop", "symbols": hit, "reasons": reasons, "decision_seqs": seqs})
                     # Stopped symbols are banned until the next scheduled rebalance.
                     self.state.setdefault("_stopped", set()).update(hit)
 
@@ -448,11 +484,11 @@ class Backtester:
                 ev = self.s.evaluate(ctx)
                 targets = None if ev.targets is None else self._apply_risk(ev.targets)
                 self.state.pop("_stopped", None)
-                self._record_decisions(d, ev, weights, targets)
+                seqs = self._record_decisions(d, ev, weights, targets)
                 if targets is not None:
                     self.targets = targets
                     reasons = {s: n.reason for s, n in ev.notes.items()}
-                    pending.append({"type": "rebalance", "targets": targets, "reasons": reasons})
+                    pending.append({"type": "rebalance", "targets": targets, "reasons": reasons, "decision_seqs": seqs})
                 elif self.cash > 1 and self.targets:
                     pending.append({"type": "invest_cash", "targets": self.targets, "reasons": {}})
             elif flow and self.targets:

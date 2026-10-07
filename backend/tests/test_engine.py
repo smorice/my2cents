@@ -142,3 +142,75 @@ def test_param_validation():
         build("golden_cross", {"fast": 200, "slow": 50})
     with pytest.raises(ValueError):
         build("momentum", {"lookback_days": 17})
+
+
+def test_trades_point_to_their_decision():
+    close, open_, b, bo = make_prices()
+    res = Backtester(build("momentum", {"top_n": 1}), config(close), close, open_, b, bo).run()
+    by_seq = {d["seq"]: d for d in res["decisions"]}
+    assert [d["seq"] for d in res["decisions"]] == list(range(len(res["decisions"])))
+    linked = [t for t in res["trades"] if t["decision_seq"] is not None]
+    assert len(linked) == len(res["trades"])  # no contributions here: every order comes from a decision
+    for t in linked:
+        d = by_seq[t["decision_seq"]]
+        assert d["symbol"] == t["symbol"] and d["date"] < t["date"]
+
+
+def test_progress_is_reported():
+    close, open_, b, bo = make_prices()
+    seen = []
+    Backtester(build("buy_and_hold", {}), config(close), close, open_, b, bo).run(progress=seen.append)
+    assert seen[0] == 0 and 0.9 < seen[-1] <= 1 and seen == sorted(seen)
+
+
+@pytest.mark.parametrize("kind,params", [
+    ("buy_and_hold", {}), ("momentum", {"top_n": 1}), ("moving_average", {"sma_period": 50}), ("golden_cross", {"fast": 20, "slow": 50}),
+    ("mean_reversion", {"trend_filter": False}), ("relative_strength", {"top_n": 1}),
+    ("benchmark_outperformance", {"lookback_days": 21, "entry_threshold_pct": 1}),
+])
+def test_trade_decisions_are_explained(kind, params):
+    close, open_, b, bo = make_prices()
+    res = Backtester(build(kind, params), config(close, rebalance="weekly"), close, open_, b, bo).run()
+    traded = [d for d in res["decisions"] if d["action"] in ("buy", "sell")]
+    assert traded
+    for d in traded:
+        ex = d["explain"]
+        assert ex and (ex["facts"] or ex["checks"])
+        if d["action"] == "buy" and kind != "buy_and_hold":
+            assert all(c["passed"] for c in ex["checks"]), (d["reason"], ex)
+
+
+def test_window_and_rolling_analytics():
+    from datetime import date as d_
+
+    from app.engine import analytics
+
+    close, open_, b, bo = make_prices()
+    res = Backtester(build("buy_and_hold", {}), config(close, contributions=Contributions(amount=100, frequency="monthly")),
+                     close, open_, b, bo).run()
+    s = res["series"]
+    full = analytics.window(s, d_.fromisoformat(s["dates"][0]))
+    # Over the whole period the windowed TWR equals the engine's own.
+    assert full["metrics"]["total_return"] == pytest.approx(res["summary"]["strategy"]["total_return"], rel=1e-6)
+    assert full["strategy"][0] == 100
+    last = d_.fromisoformat(s["dates"][-1])
+    one_year = analytics.window(s, analytics.period_start("1Y", d_.fromisoformat(s["dates"][0]), last))
+    assert one_year["strategy"][0] == 100 and 240 < len(one_year["dates"]) < 270
+    assert analytics.period_start("YTD", d_(2000, 1, 1), last) == d_(last.year, 1, 1)
+    r = analytics.rolling(s, 63)
+    assert r["volatility"][10] is None and r["volatility"][-1] > 0
+    assert r["gains"][-1] == pytest.approx(res["summary"]["strategy"]["net_profit"], rel=1e-6)
+
+
+def test_benchmark_comparison_is_like_for_like():
+    """Holding the benchmark itself, without costs, must reproduce the benchmark line exactly,
+    contributions included: same cash flows, same execution prices, same valuation."""
+    close, open_, b, bo = make_prices()
+    uni = pd.DataFrame({"IDX": b})
+    uni_open = pd.DataFrame({"IDX": bo})
+    cfg = config(uni, universe=["IDX"], contributions=Contributions(amount=250, frequency="monthly"))
+    res = Backtester(build("buy_and_hold", {}), cfg, uni, uni_open, b, bo).run()
+    s = res["series"]
+    assert s["equity"][-1] == pytest.approx(s["benchmark_equity"][-1], rel=1e-6)
+    assert res["summary"]["strategy"]["cagr"] == pytest.approx(res["summary"]["benchmark"]["cagr"], abs=1e-6)
+    assert s["invested"][-1] == pytest.approx(10_000 + 250 * len(res["contributions"]))

@@ -33,6 +33,24 @@ export interface StrategyKind {
   params: Param[];
   default_rebalance: string;
   uses_benchmark: boolean;
+  family: string;
+  complexity: 1 | 2 | 3;
+  horizon: string;
+  risk_level: 1 | 2 | 3;
+  risks: string[];
+}
+
+export interface BenchmarkInfo {
+  symbol: string;
+  label: string;
+  description: string;
+  total_return: boolean;
+  currency: string;
+  kind: string;
+  first_date: string | null;
+  last_date: string | null;
+  last_synced_at: string | null;
+  available: boolean;
 }
 
 export interface Definition {
@@ -135,9 +153,14 @@ export interface BacktestRow {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  job_id: string | null;
+  progress: number | null;
+  progress_message: string | null;
 }
 
 export interface Trade {
+  seq: number;
+  decision_seq: number | null;
   date: string;
   symbol: string;
   side: "buy" | "sell";
@@ -150,7 +173,31 @@ export interface Trade {
   reason: string;
 }
 
+export interface Fact {
+  label: string;
+  value: number | null;
+  fmt: "pct" | "num" | "z" | "int";
+  subject?: "asset" | "benchmark" | "universe";
+  emphasis?: boolean;
+}
+
+export interface Check {
+  label: string;
+  passed: boolean;
+  value?: number | null;
+  op?: ">=" | ">" | "<=" | "<";
+  threshold?: number;
+  fmt?: Fact["fmt"];
+}
+
+export interface Explain {
+  facts: Fact[];
+  checks: Check[];
+}
+
 export interface Decision {
+  seq: number;
+  explain: Explain | null;
   date: string;
   symbol: string;
   action: "buy" | "sell" | "increase" | "decrease" | "hold" | "skip";
@@ -177,14 +224,14 @@ export interface Results {
   yearly: { year: number; strategy: number | null; benchmark: number | null }[];
   positions: { symbol: string; name: string; qty: number; avg_cost: number; price: number; value: number; weight: number; unrealized_pnl: number; unrealized_pct: number }[];
   attribution: { symbol: string; name: string; pnl: number }[];
-  trades: Trade[];
   contributions: { date: string; amount: number; cumulative: number; portfolio_value: number }[];
   allocation_history: { date: string; weights: Record<string, number>; cash: number }[];
   warnings: string[];
   assumptions: string[];
   names: Record<string, string>;
   effective_period: { start: string; end: string };
-  decision_count: number;
+  counts: { decisions: number; trades: number; positions: number };
+  data_as_of: string | null;
 }
 
 export interface BacktestFull extends BacktestRow {
@@ -230,6 +277,8 @@ export interface Portfolio {
     fractional: boolean;
   };
   archived: boolean;
+  currency: string;
+  benchmark: string | null;
   created_at: string;
   updated_at: string;
   latest_simulation: { id: string; status: string; created_at: string; error: string | null; summary: Metrics | null; benchmark: Metrics | null } | null;

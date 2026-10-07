@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
-import type { Instrument, Strategy, StrategyKind } from "./types";
+import type { BenchmarkInfo, Instrument, Strategy, StrategyKind } from "./types";
 
 export const useCatalog = () =>
   useQuery({ queryKey: ["catalog"], queryFn: () => api<StrategyKind[]>("/strategies/catalog"), staleTime: Infinity });
@@ -20,3 +20,6 @@ export function useNames() {
   for (const i of q.data ?? []) map[i.symbol] = i.name;
   return map;
 }
+
+export const useBenchmarks = () =>
+  useQuery({ queryKey: ["benchmarks"], queryFn: () => api<BenchmarkInfo[]>("/market/benchmarks"), staleTime: 10 * 60_000 });

@@ -6,7 +6,11 @@ from .base import (
     Note,
     Param,
     Strategy,
+    check,
     equal_weights,
+    explain,
+    fact,
+    flag,
     pct,
     sma,
     tradable,
@@ -29,6 +33,15 @@ class BuyAndHold(Strategy):
         "à chaque échéance. C'est la référence passive contre laquelle toute stratégie active doit se mesurer."
     )
     default_rebalance = "never"
+    family = "Buy & Hold"
+    complexity = 1
+    horizon = "Long terme (10 ans et plus)"
+    risk_level = 2
+    risks = [
+        "Subit l'intégralité des baisses de marché, sans aucune protection.",
+        "Sans rééquilibrage, quelques lignes gagnantes peuvent finir par dominer le portefeuille.",
+        "Exige de tenir psychologiquement pendant les krachs.",
+    ]
     params = [
         Param("rebalance_to_equal", "Rééquilibrer vers l'équipondération", "bool", False,
               "Si activé, chaque échéance de rééquilibrage ramène chaque ligne à 1/N."),
@@ -40,8 +53,11 @@ class BuyAndHold(Strategy):
         ctx.state["initialised"] = True
         if first or self.p["rebalance_to_equal"]:
             label = "Allocation initiale équipondérée." if first else "Ramené à l'équipondération."
-            return Evaluation(equal_weights(symbols), {s: Note(label) for s in symbols})
-        return Evaluation(None, {s: Note("Conservé : stratégie passive.") for s in ctx.weights})
+            w = equal_weights(symbols)
+            ex = {s: explain([fact(f"Poids cible : 1/{len(symbols)} de l'univers", w[s])], [flag("Coté à cette date", True)]) for s in symbols}
+            return Evaluation(w, {s: Note(label, explain=ex[s]) for s in symbols})
+        return Evaluation(None, {s: Note("Conservé : stratégie passive.", explain=explain(checks=[flag("Stratégie passive : jamais de vente", True)]))
+                                 for s in ctx.weights})
 
 
 class Momentum(Strategy):
@@ -54,6 +70,15 @@ class Momentum(Strategy):
         "Les N meilleurs sont achetés à parts égales ; les autres sont vendus. Optionnellement, seuls les actifs "
         "à momentum absolu positif sont retenus (sinon la poche reste en liquidités)."
     )
+    family = "Momentum"
+    complexity = 2
+    horizon = "Moyen terme (3 à 12 mois par position)"
+    risk_level = 3
+    risks = [
+        "Retournements brutaux (« momentum crash ») lors des rebonds de marché après une forte baisse.",
+        "Rotation fréquente : frais et fiscalité pèsent sur le résultat net.",
+        "Portefeuille concentré sur quelques titres, souvent du même secteur.",
+    ]
     params = [
         Param("lookback_days", "Fenêtre de mesure", "choice", 126, LOOKBACK_HELP, choices=LOOKBACK_CHOICES, unit="jours"),
         Param("skip_days", "Jours récents ignorés", "int", 0, "Ex. 21 pour le momentum « 12-1 ».", min=0, max=63),
@@ -75,15 +100,21 @@ class Momentum(Strategy):
         ranked = sorted(scores, key=scores.get, reverse=True)
         notes: dict[str, Note] = {}
         chosen = []
+        window = f"{lb} j" + (f", hors {skip} derniers j" if skip else "")
         for rank, s in enumerate(ranked, 1):
             m = {"momentum": scores[s], "rank": rank}
+            checks = [check(f"Classé parmi les {n} meilleurs", rank, "<=", n, "int")]
+            if self.p["require_positive"]:
+                checks.append(check("Momentum positif", scores[s], ">", 0.0))
+            ex = explain([fact(f"Performance de {{asset}} ({window})", scores[s], subject="asset", emphasis=True),
+                          fact(f"Rang sur {len(ranked)} actifs", rank, "int")], checks)
             if rank > n:
-                notes[s] = Note(f"Rang {rank} (momentum {pct(scores[s])}) : hors des {n} meilleurs.", m)
+                notes[s] = Note(f"Rang {rank} (momentum {pct(scores[s])}) : hors des {n} meilleurs.", m, ex)
             elif self.p["require_positive"] and scores[s] <= 0:
-                notes[s] = Note(f"Rang {rank} mais momentum négatif ({pct(scores[s])}) : filtre absolu.", m)
+                notes[s] = Note(f"Rang {rank} mais momentum négatif ({pct(scores[s])}) : filtre absolu.", m, ex)
             else:
                 chosen.append(s)
-                notes[s] = Note(f"Rang {rank}/{len(ranked)} avec un momentum de {pct(scores[s])} sur {lb} j.", m)
+                notes[s] = Note(f"Rang {rank}/{len(ranked)} avec un momentum de {pct(scores[s])} sur {lb} j.", m, ex)
         weights = {s: 1.0 / n for s in chosen}  # unfilled slots stay in cash
         return Evaluation(weights, notes)
 
@@ -99,6 +130,15 @@ class MovingAverage(Strategy):
         "oscille autour de la moyenne."
     )
     default_rebalance = "weekly"
+    family = "Moving Average"
+    complexity = 1
+    horizon = "Moyen terme"
+    risk_level = 2
+    risks = [
+        "Faux signaux répétés dans les marchés sans tendance (« whipsaws »).",
+        "Retard à l'entrée et à la sortie : une partie des hausses est manquée.",
+        "Les liquidités non investies ne rapportent rien dans la simulation.",
+    ]
     params = [
         Param("sma_period", "Période de la moyenne", "choice", 200, choices=[20, 50, 100, 150, 200], unit="jours"),
         Param("band_pct", "Marge de tolérance", "float", 1.0,
@@ -121,11 +161,15 @@ class MovingAverage(Strategy):
             gap = price / avg - 1
             m = {"price": price, "sma": avg, "gap": gap}
             invested = ctx.weights.get(s, 0) > 0
-            if gap > band or (invested and gap >= -band):
+            c = (check(f"Écart au-dessus de −{band * 100:g} % (maintien)", gap, ">=", -band) if invested
+                 else check(f"Écart au-dessus de +{band * 100:g} % (entrée)", gap, ">", band))
+            ex = explain([fact("Cours de {asset}", price, "num", subject="asset"), fact(f"Moyenne mobile {period} j", avg, "num"),
+                          fact("Écart à la moyenne", gap, emphasis=True)], [c])
+            if c["passed"]:
                 held.append(s)
-                notes[s] = Note(f"Cours {pct(gap)} par rapport à la SMA {period} : tendance haussière.", m)
+                notes[s] = Note(f"Cours {pct(gap)} par rapport à la SMA {period} : tendance haussière.", m, ex)
             else:
-                notes[s] = Note(f"Cours {pct(gap)} par rapport à la SMA {period} : hors marché.", m)
+                notes[s] = Note(f"Cours {pct(gap)} par rapport à la SMA {period} : hors marché.", m, ex)
         n = max(len(symbols), 1)
         return Evaluation({s: 1.0 / n for s in held}, notes)
 
@@ -140,6 +184,14 @@ class GoldenCross(Strategy):
         "moyenne courte reste au-dessus de la longue, à poids égal dans l'univers ; sinon sa poche est en liquidités."
     )
     default_rebalance = "weekly"
+    family = "Trend Following"
+    complexity = 1
+    horizon = "Long terme (signaux rares)"
+    risk_level = 2
+    risks = [
+        "Signaux très tardifs : la baisse est souvent déjà bien entamée à la sortie.",
+        "Peu de signaux : résultats très dépendants de quelques épisodes historiques.",
+    ]
     params = [
         Param("fast", "Moyenne courte", "int", 50, min=5, max=150, unit="jours"),
         Param("slow", "Moyenne longue", "int", 200, min=20, max=300, unit="jours"),
@@ -163,11 +215,14 @@ class GoldenCross(Strategy):
                 continue
             spread = f / sl - 1
             m = {"sma_fast": f, "sma_slow": sl, "spread": spread}
+            ex = explain([fact(f"Moyenne {fast} j de {{asset}}", f, "num", subject="asset"), fact(f"Moyenne {slow} j", sl, "num"),
+                          fact("Écart entre les moyennes", spread, emphasis=True)],
+                         [check(f"Moyenne {fast} j au-dessus de la {slow} j", spread, ">", 0.0)])
             if spread > 0:
                 held.append(s)
-                notes[s] = Note(f"SMA {fast} au-dessus de la SMA {slow} ({pct(spread)}) : golden cross actif.", m)
+                notes[s] = Note(f"SMA {fast} au-dessus de la SMA {slow} ({pct(spread)}) : golden cross actif.", m, ex)
             else:
-                notes[s] = Note(f"SMA {fast} sous la SMA {slow} ({pct(spread)}) : death cross, hors marché.", m)
+                notes[s] = Note(f"SMA {fast} sous la SMA {slow} ({pct(spread)}) : death cross, hors marché.", m, ex)
         n = max(len(symbols), 1)
         return Evaluation({s: 1.0 / n for s in held}, notes)
 
@@ -183,6 +238,15 @@ class MeanReversion(Strategy):
         "sortie. Un filtre de tendance optionnel évite d'acheter des actifs en chute durable (cours sous la SMA 200)."
     )
     default_rebalance = "daily"
+    family = "Mean Reversion"
+    complexity = 3
+    horizon = "Court terme (jours à semaines)"
+    risk_level = 3
+    risks = [
+        "Acheter une baisse peut revenir à « attraper un couteau qui tombe » si la baisse est fondamentale.",
+        "Nombre élevé de transactions : très sensible aux frais et au slippage.",
+        "Pertes potentiellement importantes sans stop-loss.",
+    ]
     params = [
         Param("window", "Fenêtre", "int", 20, min=5, max=120, unit="jours"),
         Param("entry_z", "Seuil d'entrée (z-score)", "float", -2.0, min=-4, max=0, step=0.1),
@@ -208,28 +272,36 @@ class MeanReversion(Strategy):
             if z is None:
                 continue
             m = {"zscore": z}
+            facts = [fact(f"Écart de {{asset}} à sa moyenne {window} j, en écarts-types (z-score)", z, "z", subject="asset", emphasis=True)]
             trend_ok = True
+            trend = None
             if self.p["trend_filter"]:
                 long = sma(ctx.prices[s], 200)
                 trend_ok = long is not None and ctx.prices[s].iloc[-1] > long
                 m["above_sma200"] = 1.0 if trend_ok else 0.0
+                trend = flag("Tendance de fond haussière (cours au-dessus de la moyenne 200 j)", trend_ok)
             if ctx.weights.get(s, 0) > 0:
+                ex = explain(facts, [check("Sortie quand le z-score remonte au seuil", z, ">=", exit_, "z")])
                 if z >= exit_:
-                    notes[s] = Note(f"Z-score {z:+.2f} ≥ {exit_:+.2f} : retour à la moyenne atteint, sortie.", m)
+                    notes[s] = Note(f"Z-score {z:+.2f} ≥ {exit_:+.2f} : retour à la moyenne atteint, sortie.", m, ex)
                 else:
                     keep.append(s)
-                    notes[s] = Note(f"Z-score {z:+.2f} encore sous le seuil de sortie : position conservée.", m)
-            elif z <= entry and trend_ok:
+                    notes[s] = Note(f"Z-score {z:+.2f} encore sous le seuil de sortie : position conservée.", m, ex)
+                continue
+            ex = explain(facts, [check("Z-score sous le seuil d'entrée", z, "<=", entry, "z")] + ([trend] if trend else []))
+            if z <= entry and trend_ok:
                 candidates.append((z, s))
-                notes[s] = Note(f"Z-score {z:+.2f} ≤ {entry:+.2f} : sous-évaluation statistique, achat.", m)
+                notes[s] = Note(f"Z-score {z:+.2f} ≤ {entry:+.2f} : sous-évaluation statistique, achat.", m, ex)
             elif z <= entry:
-                notes[s] = Note(f"Z-score {z:+.2f} mais cours sous la SMA 200 : filtre de tendance.", m)
+                notes[s] = Note(f"Z-score {z:+.2f} mais cours sous la SMA 200 : filtre de tendance.", m, ex)
             else:
-                notes[s] = Note(f"Z-score {z:+.2f} : pas de signal.", m)
+                notes[s] = Note(f"Z-score {z:+.2f} : pas de signal.", m, ex)
         candidates.sort()
         room = max(n - len(keep), 0)
+        for k, (_, s) in enumerate(candidates):
+            notes[s].explain["checks"].append(flag(f"Place libre dans le portefeuille ({n} positions max)", k < room))
         for _, s in candidates[room:]:
-            notes[s] = Note(notes[s].reason.replace("achat", "mais plus de place dans le portefeuille"), notes[s].metrics)
+            notes[s] = Note(notes[s].reason.replace("achat", "mais plus de place dans le portefeuille"), notes[s].metrics, notes[s].explain)
         chosen = keep + [s for _, s in candidates[:room]]
         return Evaluation({s: 1.0 / n for s in chosen}, notes)
 
@@ -244,6 +316,14 @@ class RelativeStrength(Strategy):
         "à condition qu'elle dépasse le seuil minimum. Contrairement au momentum pur, la stratégie reste "
         "investie dans les meilleurs relatifs même dans un marché baissier, sauf si le filtre absolu est activé."
     )
+    family = "Relative Strength"
+    complexity = 2
+    horizon = "Moyen terme"
+    risk_level = 3
+    risks = [
+        "Reste investie en marché baissier : surperformer un univers qui chute reste une perte.",
+        "Rotation sectorielle rapide et concentration du portefeuille.",
+    ]
     params = [
         Param("lookback_days", "Fenêtre de mesure", "choice", 126, LOOKBACK_HELP, choices=LOOKBACK_CHOICES, unit="jours"),
         Param("top_n", "Nombre de lignes", "int", 5, min=1, max=50),
@@ -271,15 +351,22 @@ class RelativeStrength(Strategy):
         for rank, s in enumerate(ranked, 1):
             m = {"return": rets[s], "universe_return": avg, "relative_strength": excess[s], "rank": rank}
             base = f"Perf. {pct(rets[s])} vs univers {pct(avg)} → force relative {pct(excess[s])}"
+            checks = [check(f"Classé parmi les {n} meilleurs", rank, "<=", n, "int"),
+                      check("Force relative au-dessus du minimum", excess[s], ">=", self.p["min_excess_pct"] / 100)]
+            if self.p["require_positive"]:
+                checks.append(check("Performance absolue positive", rets[s], ">", 0.0))
+            ex = explain([fact(f"Performance de {{asset}} sur {lb} j", rets[s], subject="asset"),
+                          fact(f"Performance moyenne de l'univers sur {lb} j", avg, subject="universe"),
+                          fact("Force relative", excess[s], emphasis=True), fact(f"Rang sur {len(ranked)}", rank, "int")], checks)
             if rank > n:
-                notes[s] = Note(f"{base} ; rang {rank}, hors sélection.", m)
+                notes[s] = Note(f"{base} ; rang {rank}, hors sélection.", m, ex)
             elif excess[s] * 100 < self.p["min_excess_pct"]:
-                notes[s] = Note(f"{base} ; sous le seuil de {self.p['min_excess_pct']:.1f} %.", m)
+                notes[s] = Note(f"{base} ; sous le seuil de {self.p['min_excess_pct']:.1f} %.", m, ex)
             elif self.p["require_positive"] and rets[s] <= 0:
-                notes[s] = Note(f"{base} ; performance absolue négative (filtre).", m)
+                notes[s] = Note(f"{base} ; performance absolue négative (filtre).", m, ex)
             else:
                 chosen.append(s)
-                notes[s] = Note(f"{base} ; rang {rank}, sélectionné.", m)
+                notes[s] = Note(f"{base} ; rang {rank}, sélectionné.", m, ex)
         return Evaluation({s: 1.0 / n for s in chosen}, notes)
 
 
@@ -295,6 +382,15 @@ class BenchmarkOutperformance(Strategy):
         "éligibles que de places disponibles, les plus fortes surperformances sont privilégiées."
     )
     uses_benchmark = True
+    family = "Relative Strength"
+    complexity = 2
+    horizon = "Moyen terme (semaines à mois)"
+    risk_level = 3
+    risks = [
+        "Achète ce qui a déjà monté : vulnérable aux retournements de tendance.",
+        "La comparaison dépend du choix de l'indice : un indice de prix (hors dividendes) flatte la stratégie.",
+        "Biais du survivant de l'univers CAC 40 actuel appliqué au passé.",
+    ]
     params = [
         Param("lookback_days", "Période N", "int", 63, LOOKBACK_HELP, min=5, max=504, unit="jours"),
         Param("entry_threshold_pct", "Seuil d'entrée X", "float", 5.0,
@@ -330,21 +426,29 @@ class BenchmarkOutperformance(Strategy):
             m = {"return": r, "benchmark_return": bench, "excess": excess}
             base = f"{pct(r)} sur {lb} j vs indice {pct(bench)} → écart {pct(excess)}"
             held = ctx.weights.get(s, 0) > 0
+            facts = [fact(f"Performance de {{asset}} sur {lb} j", r, subject="asset"),
+                     fact(f"Performance de {{benchmark}} sur {lb} j", bench, subject="benchmark"),
+                     fact("Surperformance", excess, emphasis=True)]
+            ex = explain(facts, [check("Seuil de sortie (position détenue)", excess, ">=", exit_) if held
+                                 else check("Seuil d'entrée requis", excess, ">=", entry)])
             if held and excess >= exit_:
                 keep.append((excess, s))
-                notes[s] = Note(f"{base} ≥ seuil de sortie {pct(exit_)} : conservé.", m)
+                notes[s] = Note(f"{base} ≥ seuil de sortie {pct(exit_)} : conservé.", m, ex)
             elif held:
-                notes[s] = Note(f"{base} < seuil de sortie {pct(exit_)} : vendu.", m)
+                notes[s] = Note(f"{base} < seuil de sortie {pct(exit_)} : vendu.", m, ex)
             elif excess >= entry:
                 candidates.append((excess, s))
-                notes[s] = Note(f"{base} ≥ seuil d'entrée {pct(entry)} : acheté.", m)
+                notes[s] = Note(f"{base} ≥ seuil d'entrée {pct(entry)} : acheté.", m, ex)
             else:
-                notes[s] = Note(f"{base} < seuil d'entrée {pct(entry)} : non retenu.", m)
+                notes[s] = Note(f"{base} < seuil d'entrée {pct(entry)} : non retenu.", m, ex)
         keep.sort(reverse=True)
         candidates.sort(reverse=True)
         selected = (keep + candidates)[:n]
+        if len(keep) + len(candidates) > n:
+            for k, (_, s) in enumerate(keep + candidates):
+                notes[s].explain["checks"].append(flag(f"Parmi les {n} plus fortes surperformances (places disponibles)", k < n))
         for _, s in (keep + candidates)[n:]:
-            notes[s] = Note(notes[s].reason.rsplit(":", 1)[0] + ": éligible mais portefeuille complet.", notes[s].metrics)
+            notes[s] = Note(notes[s].reason.rsplit(":", 1)[0] + ": éligible mais portefeuille complet.", notes[s].metrics, notes[s].explain)
         if self.p["weighting"] == "excess" and selected:
             floor = min(e for e, _ in selected)
             raw = {s: (e - floor) + 0.01 for e, s in selected}
@@ -365,6 +469,14 @@ class FixedAllocation(Strategy):
         "liquidités. À chaque échéance de rééquilibrage, les lignes qui ont dérivé sont ramenées à leur cible "
         "(on vend ce qui a monté, on achète ce qui a baissé). Les actifs listés doivent faire partie de l'univers."
     )
+    family = "Buy & Hold"
+    complexity = 1
+    horizon = "Long terme"
+    risk_level = 2
+    risks = [
+        "Aucune protection en cas de baisse générale des marchés.",
+        "Les ETF en devise étrangère exposent au change (non simulé ici).",
+    ]
     params = [
         Param("weights", "Poids cibles", "weights", {"CW8.PA": 80.0, "PUST.PA": 20.0},
               "Pourcentage par symbole ; la somme doit être ≤ 100 %."),
@@ -377,9 +489,12 @@ class FixedAllocation(Strategy):
             if s in available:
                 targets[s] = w / 100
                 cur = ctx.weights.get(s, 0.0)
-                notes[s] = Note(f"Cible {w:.1f} % (poids actuel {cur * 100:.1f} %).", {"target": w / 100, "current": cur})
+                notes[s] = Note(f"Cible {w:.1f} % (poids actuel {cur * 100:.1f} %).", {"target": w / 100, "current": cur},
+                                explain([fact("Poids actuel de {asset}", cur, subject="asset"), fact("Poids cible", w / 100, emphasis=True),
+                                         fact("Écart à la cible", w / 100 - cur)]))
             else:
-                notes[s] = Note(f"Cible {w:.1f} % mais aucune cotation disponible à cette date : reste en liquidités.")
+                notes[s] = Note(f"Cible {w:.1f} % mais aucune cotation disponible à cette date : reste en liquidités.",
+                                explain=explain(checks=[flag("Coté à cette date", False)]))
         return Evaluation(targets, notes)
 
 

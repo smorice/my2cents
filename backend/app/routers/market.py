@@ -1,3 +1,4 @@
+import uuid
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -7,8 +8,11 @@ from sqlalchemy.orm import Session, defer
 from .. import audit
 from ..db import get_db
 from ..deps import require
-from ..engine.data import UNIVERSES, DataError, sync_symbol
-from ..models import Backtest, Instrument, Portfolio, PriceBar, Strategy, User
+from ..engine import analytics
+from ..marketdata.catalog import UNIVERSES
+from ..marketdata.providers import PROVIDERS, DataError
+from ..marketdata.service import sync_symbol
+from ..models import Backtest, Benchmark, Instrument, Portfolio, PriceBar, Strategy, User
 from ..rbac import Perm
 from ..schemas import InstrumentIn
 
@@ -18,12 +22,25 @@ router = APIRouter(tags=["market"])
 def _inst(i: Instrument) -> dict:
     return {"symbol": i.symbol, "name": i.name, "kind": i.kind, "currency": i.currency, "sector": i.sector,
             "universes": i.universes, "first_date": i.first_date, "last_date": i.last_date,
-            "last_synced_at": i.last_synced_at, "sync_error": i.sync_error}
+            "last_synced_at": i.last_synced_at, "sync_error": i.sync_error, "provider": i.provider}
 
 
 @router.get("/market/universes")
 def universes(_: User = Depends(require(Perm.MARKET_READ))):
     return [{"key": k, **v} for k, v in UNIVERSES.items()]
+
+
+@router.get("/market/benchmarks")
+def benchmarks(_: User = Depends(require(Perm.MARKET_READ)), db: Session = Depends(get_db)):
+    rows = db.execute(select(Benchmark, Instrument).join(Instrument, Instrument.symbol == Benchmark.symbol).order_by(Benchmark.sort_order)).all()
+    return [{"symbol": b.symbol, "label": b.label, "description": b.description, "total_return": b.total_return,
+             "currency": i.currency, "kind": i.kind, "first_date": i.first_date, "last_date": i.last_date,
+             "last_synced_at": i.last_synced_at, "available": i.last_date is not None} for b, i in rows]
+
+
+@router.get("/market/providers")
+def providers(_: User = Depends(require(Perm.MARKET_READ))):
+    return [{"name": p.name, "label": p.label, "description": p.description} for p in PROVIDERS.values()]
 
 
 @router.get("/market/instruments")
@@ -45,11 +62,9 @@ def add_instrument(body: InstrumentIn, request: Request, user: User = Depends(re
     try:
         n = sync_symbol(db, symbol)
     except DataError as exc:
-        db.rollback()
         raise HTTPException(404, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        db.rollback()
-        raise HTTPException(502, f"Source de données indisponible : {exc}") from exc
+        raise HTTPException(502, "Source de données indisponible, réessayez plus tard.") from exc
     audit.record(db, "market.instrument_add", actor=user, request=request, resource_type="instrument", resource_id=symbol, details={"bars": n})
     db.commit()
     return _inst(db.get(Instrument, symbol))
@@ -59,9 +74,10 @@ def add_instrument(body: InstrumentIn, request: Request, user: User = Depends(re
 def resync(symbol: str, request: Request, user: User = Depends(require(Perm.MARKET_REFRESH)), db: Session = Depends(get_db)):
     try:
         n = sync_symbol(db, symbol.upper())
+    except DataError as exc:
+        raise HTTPException(404, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        db.rollback()
-        raise HTTPException(502, str(exc)) from exc
+        raise HTTPException(502, "Source de données indisponible, réessayez plus tard.") from exc
     audit.record(db, "market.sync", actor=user, request=request, resource_type="instrument", resource_id=symbol.upper(), details={"bars": n})
     db.commit()
     return _inst(db.get(Instrument, symbol.upper()))
@@ -93,6 +109,66 @@ def _perf(db: Session, symbol: str) -> dict | None:
         "month": back(30), "ytd": (last / ytd_rows[-1] - 1) if ytd_rows else None, "year": back(365),
         "spark": [v for _, v in rows[-90:]],
     }
+
+
+_PERF_CACHE: dict[tuple, dict] = {}
+
+
+@router.get("/dashboard/performance")
+def dashboard_performance(
+    period: str = "MAX", focus: uuid.UUID | None = None,
+    user: User = Depends(require(Perm.BACKTEST_READ)), db: Session = Depends(get_db),
+):
+    """« Comment mes stratégies auraient-elles performé ? » — the latest finished backtest of each
+    strategy, rebased to 100 over the chosen period, with the focus backtest's full metrics."""
+    from .backtests import win_rate
+
+    if period not in analytics.PERIODS:
+        raise HTTPException(422, "Période inconnue")
+    # Series are only loaded (lazily) for the backtests actually shown.
+    done = db.scalars(select(Backtest).options(defer(Backtest.results))
+                      .where(Backtest.owner_id == user.id, Backtest.status == "done", Backtest.portfolio_id.is_(None))
+                      .order_by(Backtest.finished_at.desc()).limit(60)).unique().all()
+    latest: dict = {}
+    for b in done:
+        latest.setdefault(b.strategy_id, b)
+    picked = list(latest.values())[:6]
+    if focus and not any(b.id == focus for b in picked):
+        extra = next((b for b in done if b.id == focus), None)
+        if extra:
+            picked = [extra] + picked[:5]
+    if not picked:
+        return {"period": period, "items": [], "focus": None}
+    focus_bt = next((b for b in picked if b.id == focus), picked[0])
+    # Finished backtests never change: the computed view is cached on their ids and finish times.
+    key = (user.id, period, focus_bt.id, tuple((b.id, b.finished_at) for b in picked))
+    hit = _PERF_CACHE.get(key)
+    if hit is not None:
+        return hit
+    last = max(date.fromisoformat(b.results["series"]["dates"][-1]) for b in picked)
+    first = min(date.fromisoformat(b.results["series"]["dates"][0]) for b in picked)
+    start = analytics.period_start(period, first, last)
+    items = []
+    for b in picked:
+        w = analytics.window(b.results["series"], start, last, b.config.get("risk_free_pct", 2.0))
+        if w is None:
+            continue
+        names = b.results.get("names", {})
+        keep = analytics.downsample_index(len(w["dates"]))
+        items.append({
+            "id": str(b.id), "name": b.name, "strategy_name": b.strategy.name, "strategy_id": str(b.strategy_id),
+            "benchmark": b.config["benchmark"], "benchmark_name": names.get(b.config["benchmark"], b.config["benchmark"]),
+            "dates": [w["dates"][i] for i in keep], "values": [w["strategy"][i] for i in keep],
+            "benchmark_values": [w["benchmark"][i] for i in keep],
+            "metrics": w["metrics"], "benchmark_metrics": w["benchmark_metrics"], "start": w["start"], "end": w["end"],
+            **(win_rate(db, b.id) if b.id == focus_bt.id else {}),
+        })
+    out = {"period": period, "start": start.isoformat(), "end": last.isoformat(), "items": items,
+           "focus": str(focus_bt.id) if any(i["id"] == str(focus_bt.id) for i in items) else (items[0]["id"] if items else None)}
+    if len(_PERF_CACHE) > 500:
+        _PERF_CACHE.clear()
+    _PERF_CACHE[key] = out
+    return out
 
 
 @router.get("/dashboard")

@@ -1,27 +1,30 @@
-"""Runs backtests off the request thread and stores their results."""
+"""Backtest application service: resolves a run's configuration, queues it as a
+job, and (inside the worker) feeds market data to the engine and stores results."""
 
 from __future__ import annotations
 
 import logging
-import traceback
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import select, update
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from . import audit
+from . import audit, jobs
 from .config import get_settings
 from .db import SessionLocal
 from .engine.backtester import BacktestConfig, Backtester, Contributions, CostModel, RiskModel
-from .engine.data import UNIVERSES, ensure_fresh, load_panel
 from .engine.strategies.library import build
-from .models import Backtest, Instrument, Strategy, User, utcnow
+from .marketdata.catalog import UNIVERSES
+from .marketdata.providers import get_provider
+from .marketdata.service import default_symbols, ensure_fresh, load_panel, sync_symbol
+from .models import Backtest, BacktestDecision, BacktestPosition, BacktestTransaction, Instrument, Job, Strategy, User, utcnow
+from .results import store_outputs, strip_rows
 from .schemas import BacktestIn
 
 log = logging.getLogger(__name__)
-_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="backtest")
+
+MAX_ACTIVE_PER_USER = 12  # queued + running backtests per user, protects the shared worker
 
 FREQ_FR = {"daily": "quotidien", "weekly": "hebdomadaire", "monthly": "mensuel", "quarterly": "trimestriel", "yearly": "annuel", "never": "aucun"}
 
@@ -60,6 +63,9 @@ def resolve_config(strategy: Strategy, version: int, body: BacktestIn) -> dict:
 def create_backtest(db: Session, user: User, strategy: Strategy, body: BacktestIn, portfolio_id=None, request=None) -> Backtest:
     if strategy.status in ("inactive", "archived") and portfolio_id is None:
         raise HTTPException(409, "Stratégie désactivée : réactivez-la pour lancer un backtest.")
+    active = db.scalar(select(func.count()).select_from(Backtest).where(Backtest.owner_id == user.id, Backtest.status.in_(["queued", "running"])))
+    if active >= MAX_ACTIVE_PER_USER:
+        raise HTTPException(429, f"Vous avez déjà {active} simulations en cours : attendez qu'elles se terminent avant d'en lancer d'autres.")
     version = body.version or strategy.current_version
     cfg = resolve_config(strategy, version, body)
     bt = Backtest(
@@ -68,29 +74,19 @@ def create_backtest(db: Session, user: User, strategy: Strategy, body: BacktestI
     )
     db.add(bt)
     db.flush()
+    bt.job_id = jobs.enqueue(db, "backtest", {"backtest_id": str(bt.id)}, owner_id=user.id).id
     audit.record(db, "backtest.launch", actor=user, request=request, resource_type="backtest", resource_id=bt.id,
-                 after={"strategy_id": str(strategy.id), "version": version, "config": cfg})
+                 after={"strategy_id": str(strategy.id), "version": version, "config": cfg, "job_id": str(bt.job_id)})
     return bt
 
 
-def submit(backtest_id) -> None:
-    _pool.submit(_run_safe, backtest_id)
-
-
-def recover_interrupted() -> None:
-    with SessionLocal() as db:
-        db.execute(update(Backtest).where(Backtest.status.in_(["queued", "running"])).values(
-            status="failed", error="Interrompu par un redémarrage du serveur. Relancez le backtest."))
-        db.commit()
-
-
-def _assumptions(cfg: dict, names: dict, bench_kind: str | None) -> list[str]:
+def _assumptions(cfg: dict, names: dict, bench_kind: str | None, source: str | None = None) -> list[str]:
     c, r = cfg["costs"], cfg["risk"]
     out = [
         "Les décisions sont prises à la clôture du jour J avec les seules données disponibles à cette date, "
         "et exécutées à l'ouverture du jour J+1 (pas de biais d'anticipation).",
         f"Rééquilibrage {FREQ_FR.get(cfg['rebalance'], cfg['rebalance'])} : premier jour de bourse de chaque période.",
-        "Cours ajustés des dividendes et opérations sur titres (source : Yahoo Finance) : les dividendes sont "
+        f"Cours ajustés des dividendes et opérations sur titres (source : {source or 'Yahoo Finance'}) : les dividendes sont "
         "considérés comme réinvestis.",
         f"Frais de courtage : {c['fee_pct']:g} % par ordre (minimum {c['fee_min']:g} €) ; slippage de "
         f"{c['slippage_bps']:g} points de base appliqué au prix d'exécution.",
@@ -117,48 +113,39 @@ def _assumptions(cfg: dict, names: dict, bench_kind: str | None) -> list[str]:
     return out
 
 
-def _run_safe(backtest_id) -> None:
-    try:
-        _run(backtest_id)
-    except Exception as exc:  # noqa: BLE001
-        log.exception("backtest %s failed", backtest_id)
-        with SessionLocal() as db:
-            bt = db.get(Backtest, backtest_id)
-            if bt:
-                bt.status = "failed"
-                bt.error = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else "Erreur interne : " + traceback.format_exc(limit=1).splitlines()[-1]
-                bt.finished_at = utcnow()
-                owner = db.get(User, bt.owner_id)
-                audit.record(db, "backtest.complete", actor=owner, resource_type="backtest", resource_id=bt.id,
-                             outcome="failure", details={"error": bt.error[:500]})
-                db.commit()
+def _benchmark_note(db: Session, bench: str) -> str | None:
+    inst = db.get(Instrument, bench)
+    return None if inst is None else get_provider(inst.provider).label
 
 
-def _run(backtest_id) -> None:
+@jobs.handler("backtest")
+def run_backtest_job(job: Job, report: jobs.Reporter) -> None:
     settings = get_settings()
     with SessionLocal() as db:
-        bt = db.get(Backtest, backtest_id)
+        bt = db.get(Backtest, job.payload["backtest_id"])
         if bt is None:
             return
-        bt.status, bt.started_at = "running", utcnow()
+        bt.status, bt.started_at, bt.error = "running", utcnow(), None
         db.commit()
         cfg = bt.config
         strategy = build(cfg["kind"], cfg["parameters"])
         symbols = cfg["universe"]
         bench = cfg["benchmark"]
+        report(0.02, "Mise à jour des données de marché", force=True)
         warnings = ensure_fresh(db, symbols + [bench], settings.market_data_refresh_hours)
 
+        report(0.1, "Chargement des cours", force=True)
         start, end = date.fromisoformat(cfg["start"]), date.fromisoformat(cfg["end"])
         lead = timedelta(days=int(strategy.warmup_days() * 1.5) + 30)
         close, open_ = load_panel(db, symbols + [bench], start - lead, end)
         if close.empty or bench not in close.columns:
-            raise ValueError(f"Pas de données de marché pour l'indice de référence {bench} sur la période.")
+            raise jobs.UserFacingError(f"Pas de données de marché pour l'indice de référence {bench} sur la période.")
         uni = [s for s in symbols if s in close.columns]
         missing = sorted(set(symbols) - set(uni))
         if missing:
             warnings.append(f"Sans données sur la période, ignorés : {', '.join(missing)}.")
         if not uni:
-            raise ValueError("Aucun actif de l'univers n'a de données sur la période.")
+            raise jobs.UserFacingError("Aucun actif de l'univers n'a de données sur la période.")
         names = dict(db.execute(select(Instrument.symbol, Instrument.name).where(Instrument.symbol.in_(symbols + [bench]))).all())
         currencies = set(db.scalars(select(Instrument.currency).where(Instrument.symbol.in_(uni))).all())
         if len(currencies) > 1:
@@ -166,27 +153,42 @@ def _run(backtest_id) -> None:
 
         bench_close = close[bench].dropna()
         bench_open = open_[bench].dropna()
-        engine = Backtester(
-            strategy,
-            BacktestConfig(
-                start=start, end=end, initial_capital=cfg["initial_capital"], universe=uni, benchmark=bench,
-                rebalance=cfg["rebalance"], costs=CostModel(**cfg["costs"]), risk=RiskModel(**cfg["risk"]),
-                contributions=Contributions(
-                    amount=cfg["contributions"]["amount"], frequency=cfg["contributions"]["frequency"],
-                    start=date.fromisoformat(cfg["contributions"]["start"]) if cfg["contributions"].get("start") else None,
-                    end=date.fromisoformat(cfg["contributions"]["end"]) if cfg["contributions"].get("end") else None,
+        try:
+            engine = Backtester(
+                strategy,
+                BacktestConfig(
+                    start=start, end=end, initial_capital=cfg["initial_capital"], universe=uni, benchmark=bench,
+                    rebalance=cfg["rebalance"], costs=CostModel(**cfg["costs"]), risk=RiskModel(**cfg["risk"]),
+                    contributions=Contributions(
+                        amount=cfg["contributions"]["amount"], frequency=cfg["contributions"]["frequency"],
+                        start=date.fromisoformat(cfg["contributions"]["start"]) if cfg["contributions"].get("start") else None,
+                        end=date.fromisoformat(cfg["contributions"]["end"]) if cfg["contributions"].get("end") else None,
+                    ),
+                    tax_mode=cfg["tax_mode"], tax_rate_pct=cfg["tax_rate_pct"], fractional=cfg["fractional"],
+                    risk_free_pct=cfg["risk_free_pct"],
                 ),
-                tax_mode=cfg["tax_mode"], tax_rate_pct=cfg["tax_rate_pct"], fractional=cfg["fractional"],
-                risk_free_pct=cfg["risk_free_pct"],
-            ),
-            close[uni].dropna(how="all"), open_[uni], bench_close, bench_open, names,
-        )
-        res = engine.run()
+                close[uni].dropna(how="all"), open_[uni], bench_close, bench_open, names,
+            )
+            res = engine.run(progress=lambda x: report(0.15 + 0.75 * x, "Simulation jour par jour"))
+        except ValueError as exc:  # invalid period / configuration detected by the engine
+            raise jobs.UserFacingError(str(exc)) from exc
+
+        report(0.92, "Enregistrement des résultats", force=True)
         res["warnings"] = warnings + res["warnings"]
-        res["assumptions"] = _assumptions(cfg, names, db.scalar(select(Instrument.kind).where(Instrument.symbol == bench)))
+        res["assumptions"] = _assumptions(cfg, names, db.scalar(select(Instrument.kind).where(Instrument.symbol == bench)),
+                                          _benchmark_note(db, bench))
         res["names"] = names
         res["effective_period"] = {"start": res["series"]["dates"][0], "end": res["series"]["dates"][-1]}
-        bt.results = res
+        res["data_as_of"] = max((v for v in db.scalars(select(Instrument.last_synced_at).where(Instrument.symbol.in_(uni + [bench]))) if v),
+                                default=None)
+        if res["data_as_of"]:
+            res["data_as_of"] = res["data_as_of"].isoformat()
+        conn = db.connection()
+        for table in (BacktestDecision, BacktestTransaction, BacktestPosition):  # a re-queued job may have stored a partial run
+            conn.execute(delete(table).where(table.backtest_id == bt.id))
+        store_outputs(conn, bt.id, res)
+        res["counts"] = {"decisions": len(res["decisions"]), "trades": len(res["trades"]), "positions": len(res["positions"])}
+        bt.results = strip_rows(res)
         bt.summary = res["summary"]
         bt.status, bt.finished_at = "done", utcnow()
         owner = db.get(User, bt.owner_id)
@@ -194,3 +196,38 @@ def _run(backtest_id) -> None:
         audit.record(db, "backtest.complete", actor=owner, resource_type="backtest", resource_id=bt.id,
                      details={"cagr": s.get("cagr"), "max_drawdown": s.get("max_drawdown"), "trades": s.get("trades")})
         db.commit()
+
+
+def _backtest_failed(job: Job, message: str) -> None:
+    with SessionLocal() as db:
+        bt = db.get(Backtest, job.payload["backtest_id"])
+        if bt is None:
+            return
+        bt.status, bt.error, bt.finished_at = "failed", message, utcnow()
+        audit.record(db, "backtest.complete", actor=db.get(User, bt.owner_id), resource_type="backtest", resource_id=bt.id,
+                     outcome="failure", details={"error": message[:500], "job_id": str(job.id)})
+        db.commit()
+
+
+jobs.FAILURE_HOOKS["backtest"] = _backtest_failed
+
+
+@jobs.handler("market_sync")
+def run_market_sync_job(job: Job, report: jobs.Reporter) -> None:
+    """Refresh a list of symbols (all reference symbols by default)."""
+    symbols = job.payload.get("symbols") or default_symbols()
+    failures = []
+    with SessionLocal() as db:
+        for k, s in enumerate(symbols):
+            report(k / len(symbols), f"{s} ({k + 1}/{len(symbols)})")
+            try:
+                sync_symbol(db, s)
+            except Exception as exc:  # noqa: BLE001 - one bad symbol must not stop the others
+                failures.append(f"{s}: {exc}")
+    if failures and len(failures) == len(symbols):
+        raise jobs.UserFacingError("Aucun symbole n'a pu être rafraîchi : " + "; ".join(failures[:5]))
+    if failures:
+        log.warning("market sync partial failure", extra={"job_id": str(job.id), "failures": failures[:20]})
+
+
+__all__ = ["create_backtest", "resolve_config", "run_backtest_job", "run_market_sync_job"]

@@ -1,15 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { GitCompareArrows, Play, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ArrowDown, ArrowUp, GitCompareArrows, Play, X } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { BacktestForm, defaultLaunch, type LaunchConfig } from "../components/BacktestForm";
 import { CompareChart } from "../components/charts";
 import { Card, Empty, ErrorNote, Help, Loading, PageHeader, Segmented, Spinner } from "../components/ui";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { pct, ratio, spct } from "../lib/format";
+import { num, pct, ratio, spct, tone } from "../lib/format";
 import { METRIC_HELP } from "../lib/labels";
-import { useStrategies } from "../lib/queries";
+import { useBenchmarks, useNames, useStrategies } from "../lib/queries";
 import type { BacktestRow, Metrics, Page } from "../lib/types";
 
 interface CmpItem {
@@ -18,11 +18,20 @@ interface CmpItem {
   series: { dates: string[]; twr: number[]; benchmark_twr: number[]; drawdown: number[] };
 }
 
-const METRICS: [keyof Metrics, string, (v?: number | null) => string, boolean][] = [
-  ["cagr", "CAGR", pct, true], ["total_return", "Performance totale", spct, true], ["volatility", "Volatilité", pct, false],
-  ["sharpe", "Sharpe", ratio, true], ["sortino", "Sortino", ratio, true], ["max_drawdown", "Perte max.", pct, true],
-  ["calmar", "Calmar", ratio, true], ["beta", "Bêta", ratio, false], ["alpha", "Alpha", spct, true],
-  ["avg_exposure", "Exposition moyenne", pct, false], ["trades", "Transactions", (v) => String(v ?? "—"), false],
+type Col = { key: string; label: string; get: (s: Metrics, b: Metrics) => number | null | undefined; fmt: (v?: number | null) => string; better: "high" | "low" | null; bench?: boolean; help?: string };
+
+// Rows are strategies (as in a research desk); "better" drives the highlight of the best value per column.
+const COLS: Col[] = [
+  { key: "hundred", label: "100 € deviennent", get: (s) => (s.total_return == null ? null : 100 * (1 + s.total_return)), fmt: (v) => (v == null ? "—" : `${num(v, 0)} €`), better: "high", bench: true },
+  { key: "cagr", label: "CAGR", get: (s) => s.cagr, fmt: pct, better: "high", bench: true, help: METRIC_HELP.cagr },
+  { key: "volatility", label: "Volatilité", get: (s) => s.volatility, fmt: pct, better: "low", bench: true, help: METRIC_HELP.volatility },
+  { key: "max_drawdown", label: "Perte max.", get: (s) => s.max_drawdown, fmt: pct, better: "high", bench: true, help: METRIC_HELP.max_drawdown },
+  { key: "sharpe", label: "Sharpe", get: (s) => s.sharpe, fmt: ratio, better: "high", bench: true, help: METRIC_HELP.sharpe },
+  { key: "sortino", label: "Sortino", get: (s) => s.sortino, fmt: ratio, better: "high", bench: true, help: METRIC_HELP.sortino },
+  { key: "calmar", label: "Calmar", get: (s) => s.calmar, fmt: ratio, better: "high", bench: true, help: METRIC_HELP.calmar },
+  { key: "vs", label: "vs indice", get: (s, b) => (s.cagr == null || b.cagr == null ? null : s.cagr - b.cagr), fmt: spct, better: "high", help: "Écart de CAGR annuel avec l'indice de référence du backtest." },
+  { key: "alpha", label: "Alpha", get: (s) => s.alpha, fmt: spct, better: "high", help: METRIC_HELP.alpha },
+  { key: "trades", label: "Ordres", get: (s) => s.trades, fmt: (v) => (v == null ? "—" : String(v)), better: null },
 ];
 
 export function ComparePage() {
@@ -31,7 +40,11 @@ export function ComparePage() {
   const { can } = useAuth();
   const qc = useQueryClient();
   const [metric, setMetric] = useState<"twr" | "drawdown">("twr");
-  const [picked, setPicked] = useState<string[]>([]);
+  const [picked, setPicked] = useState<string[]>(() => (params.get("strategies") ?? "").split(",").filter(Boolean));
+  const [sort, setSort] = useState<{ key: string; dir: 1 | -1 }>({ key: "cagr", dir: -1 });
+  const names = useNames();
+  const benchmarks = useBenchmarks();
+  const [bench, setBench] = useState("");
   const [launch, setLaunch] = useState<LaunchConfig>(defaultLaunch);
   const strategies = useStrategies();
   const list = useQuery({ queryKey: ["backtests", "done-list"], queryFn: () => api<Page<BacktestRow>>("/backtests", { params: { status: "done", page_size: 100 } }) });
@@ -50,22 +63,29 @@ export function ComparePage() {
   useEffect(() => { if (running === 0) qc.invalidateQueries({ queryKey: ["backtests", "done-list"] }); }, [running, qc]);
 
   const batch = useMutation({
-    mutationFn: () => api<BacktestRow[]>("/backtests/batch", { method: "POST", body: { strategy_ids: picked, base: { strategy_id: picked[0], ...launch } } }),
+    mutationFn: () => api<BacktestRow[]>("/backtests/batch", { method: "POST", body: { strategy_ids: picked, base: { strategy_id: picked[0], ...launch, benchmark: bench || null } } }),
     onSuccess: (rows) => setParams({ ids: rows.map((r) => r.id).join(",") }),
   });
 
   const setIds = (next: string[]) => setParams(next.length ? { ids: next.join(",") } : {});
   const items = cmp.data ?? [];
-  const best = (k: keyof Metrics, higher: boolean) => {
-    const vals = items.map((i) => i.summary.strategy[k] as number | null).filter((v): v is number => v != null);
-    if (!vals.length) return null;
-    return k === "max_drawdown" ? Math.max(...vals) : higher ? Math.max(...vals) : null;
+  const best = (c: Col) => {
+    const vals = items.map((i) => c.get(i.summary.strategy, i.summary.benchmark)).filter((v): v is number => v != null);
+    if (!vals.length || !c.better || items.length < 2) return null;
+    return c.better === "high" ? Math.max(...vals) : Math.min(...vals);
   };
+  const sorted = useMemo(() => {
+    const c = COLS.find((x) => x.key === sort.key);
+    if (!c) return items;
+    return [...items].sort((a, b) => ((c.get(a.summary.strategy, a.summary.benchmark) ?? -Infinity) - (c.get(b.summary.strategy, b.summary.benchmark) ?? -Infinity)) * sort.dir);
+  }, [items, sort]);
+  const sameBench = items.every((i) => i.config.benchmark === items[0]?.config.benchmark);
+  const benchName = items[0] ? names[items[0].config.benchmark] ?? items[0].config.benchmark : "";
 
   return (
     <>
-      <PageHeader eyebrow="Comparer" title="Comparer des stratégies"
-        description="Superposez des backtests sur une même base 100, ou lancez plusieurs stratégies avec exactement la même configuration pour une comparaison équitable." />
+      <PageHeader eyebrow="Comparer" title="Strategy Lab"
+        description="Toutes les stratégies démarrent à 100 € : lancez-les avec exactement la même configuration pour une comparaison équitable, ou superposez des backtests existants." />
 
       <div className="mb-6 grid gap-6 xl:grid-cols-2">
         <Card title="Lancer une comparaison équitable" subtitle="Mêmes dates, même capital, mêmes versements, même fiscalité">
@@ -80,6 +100,13 @@ export function ComparePage() {
                   ))}
                 </div>
               </div>
+              <label className="block">
+                <span className="label">Indice de référence commun</span>
+                <select className="input" value={bench} onChange={(e) => setBench(e.target.value)}>
+                  <option value="">Celui de chaque stratégie</option>
+                  {benchmarks.data?.filter((b) => b.available).map((b) => <option key={b.symbol} value={b.symbol}>{b.label}</option>)}
+                </select>
+              </label>
               <BacktestForm value={launch} onChange={setLaunch} />
               <ErrorNote error={batch.error} />
               <button className="btn-primary" disabled={picked.length < 2 || batch.isPending}><Play size={15} /> Lancer {picked.length} backtests</button>
@@ -109,40 +136,56 @@ export function ComparePage() {
           {items.some((a) => items.some((b) => a.config.start !== b.config.start || a.config.end !== b.config.end)) && (
             <p className="text-xs text-warn">Attention : les périodes diffèrent entre backtests, la comparaison n'est pas strictement équitable.</p>
           )}
-          <Card title="Performance cumulée" actions={<Segmented size="sm" value={metric} onChange={setMetric} options={[{ value: "twr", label: "Base 100" }, { value: "drawdown", label: "Drawdown" }]} />}>
+          <Card title="100 € investis" subtitle="Valeur de 100 € placés au départ, hors effet des versements (rendement pondéré par le temps)"
+            actions={<Segmented size="sm" value={metric} onChange={setMetric} options={[{ value: "twr", label: "Base 100" }, { value: "drawdown", label: "Drawdown" }]} />}>
             <CompareChart metric={metric} items={[
               ...items.map((i) => ({ id: i.id, label: `${i.strategy_name} v${i.strategy_version}`, dates: i.series.dates, values: metric === "twr" ? i.series.twr : i.series.drawdown })),
-              ...(metric === "twr" && items[0] ? [{ id: "bench", label: `Indice (${items[0].config.benchmark})`, dates: items[0].series.dates, values: items[0].series.benchmark_twr }] : []),
+              ...(metric === "twr" && items[0] && sameBench ? [{ id: "bench", label: benchName, dates: items[0].series.dates, values: items[0].series.benchmark_twr, bench: true }] : []),
             ]} />
           </Card>
-          <Card title="Indicateurs" pad={false}>
-            <div className="overflow-x-auto px-3 pb-3">
+          <Card title="Classement" subtitle="Cliquez un en-tête pour trier. En violet : la meilleure valeur de la colonne." pad={false}>
+            <div tabIndex={0} className="overflow-x-auto px-3 pb-3">
               <table className="table-base">
                 <thead>
-                  <tr><th>Indicateur</th>{items.map((i) => (
-                    <th key={i.id} className="text-right normal-case tracking-normal">
-                      <span className="inline-flex items-center gap-1"><Link to={`/backtests/${i.id}`} className="text-ink hover:text-accent">{i.strategy_name}</Link>
-                        <button onClick={() => setIds(ids.filter((x) => x !== i.id))} aria-label="Retirer"><X size={12} /></button></span>
-                    </th>
-                  ))}<th className="text-right">Indice</th></tr>
+                  <tr>
+                    <th>Stratégie</th>
+                    {COLS.map((c) => (
+                      <th key={c.key} className="text-right">
+                        <button type="button" className="inline-flex items-center gap-1 uppercase hover:text-ink" onClick={() => setSort((x) => ({ key: c.key, dir: x.key === c.key ? (-x.dir as 1 | -1) : -1 }))}
+                          aria-sort={sort.key === c.key ? (sort.dir === 1 ? "ascending" : "descending") : undefined}>
+                          {c.label}{sort.key === c.key && (sort.dir === 1 ? <ArrowUp size={11} /> : <ArrowDown size={11} />)}
+                        </button>
+                        {c.help && <span className="ml-1 normal-case"><Help text={c.help} /></span>}
+                      </th>
+                    ))}
+                  </tr>
                 </thead>
                 <tbody>
-                  {METRICS.map(([k, l, f, higher]) => {
-                    const top = best(k, higher);
-                    return (
-                      <tr key={k}>
-                        <td className="text-ink2"><span className="inline-flex items-center gap-1">{l}{METRIC_HELP[k] && <Help text={METRIC_HELP[k]} />}</span></td>
-                        {items.map((i) => {
-                          const v = i.summary.strategy[k] as number | null;
-                          return <td key={i.id} className={`num text-right ${top != null && v === top && items.length > 1 ? "font-semibold text-accent" : ""}`}>{f(v)}</td>;
-                        })}
-                        <td className="num text-right text-muted">{["beta", "alpha", "trades", "avg_exposure"].includes(k) ? "—" : f(items[0]?.summary.benchmark[k] as number)}</td>
-                      </tr>
-                    );
-                  })}
+                  {sorted.map((i) => (
+                    <tr key={i.id}>
+                      <td className="min-w-[200px]">
+                        <div className="flex items-center gap-2">
+                          <Link to={`/backtests/${i.id}`} className="font-medium hover:text-accent">{i.strategy_name}</Link>
+                          <button onClick={() => setIds(ids.filter((x) => x !== i.id))} aria-label={`Retirer ${i.strategy_name}`} className="text-muted hover:text-ink"><X size={12} /></button>
+                        </div>
+                        <div className="num text-xs text-muted">v{i.strategy_version} · {i.config.start.slice(0, 4)}–{i.config.end.slice(0, 4)}</div>
+                      </td>
+                      {COLS.map((c) => {
+                        const v = c.get(i.summary.strategy, i.summary.benchmark);
+                        const top = best(c);
+                        return <td key={c.key} className={`num text-right ${top != null && v === top ? "font-semibold text-accent" : c.key === "vs" ? tone(v) : ""}`}>{c.fmt(v)}</td>;
+                      })}
+                    </tr>
+                  ))}
+                  {items[0] && sameBench && (
+                    <tr className="bg-raised/50">
+                      <td><div className="font-medium text-ink2">{benchName}</div><div className="text-xs text-muted">Indice de référence, mêmes versements</div></td>
+                      {COLS.map((c) => <td key={c.key} className="num text-right text-muted">{c.bench ? c.fmt(c.get(items[0].summary.benchmark, items[0].summary.benchmark)) : "—"}</td>)}
+                    </tr>
+                  )}
                 </tbody>
               </table>
-              <p className="px-3 pt-3 text-xs text-muted">En violet : la meilleure valeur de la ligne.</p>
+              {!sameBench && <p className="px-3 pt-3 text-xs text-warn">Les backtests n'utilisent pas tous le même indice : la colonne « vs indice » compare chacun au sien.</p>}
             </div>
           </Card>
         </div>

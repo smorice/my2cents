@@ -4,9 +4,13 @@ import {
   AreaChart,
   Bar,
   BarChart,
+  Brush,
   CartesianGrid,
+  Cell,
   Line,
   LineChart,
+  Pie,
+  PieChart,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -167,11 +171,11 @@ export function MonthlyHeatmap({ rows, yearly }: { rows: { year: number; month: 
   const max = Math.max(0.02, ...rows.map((r) => Math.abs(r.return ?? 0)));
   const bg = (v: number | null) => {
     if (v == null) return undefined;
-    const a = Math.min(Math.abs(v) / max, 1) * 0.55 + 0.06;
+    const a = Math.min(Math.abs(v) / max, 1) * 0.39 + 0.06; // ≤ 0.45 keeps the cell text above 4.5:1 in both themes
     return v >= 0 ? `rgb(var(--pos) / ${a})` : `rgb(var(--neg) / ${a})`;
   };
   return (
-    <div className="overflow-x-auto">
+    <div tabIndex={0} className="overflow-x-auto">
       <table className="w-full min-w-[720px] border-separate border-spacing-[2px] text-[11px]">
         <thead>
           <tr>
@@ -286,8 +290,9 @@ export function AllocationChart({ history, names, height = 260 }: { history: { d
   );
 }
 
-export function CompareChart({ items, metric, height = 340 }: { items: { id: string; label: string; dates: string[]; values: number[] }[]; metric: "twr" | "drawdown"; height?: number }) {
+export function CompareChart({ items, metric, height = 340 }: { items: { id: string; label: string; dates: string[]; values: number[]; bench?: boolean }[]; metric: "twr" | "drawdown"; height?: number }) {
   const c = useChartColors();
+  const color = (i: number) => (items[i].bench ? c["c-bench"] : c.series[i]);
   const data = useMemo(() => {
     const map = new Map<string, Record<string, number | string>>();
     items.forEach((it) => it.dates.forEach((d, i) => {
@@ -300,7 +305,7 @@ export function CompareChart({ items, metric, height = 340 }: { items: { id: str
   const fmt = (v: number) => (metric === "twr" ? v.toFixed(1).replace(".", ",") : pct(v));
   return (
     <div>
-      <div className="mb-3"><Legend items={items.map((it, i) => ({ color: c.series[i], label: it.label }))} /></div>
+      <div className="mb-3"><Legend items={items.map((it, i) => ({ color: color(i), label: it.label, dashed: it.bench }))} /></div>
       <div style={{ height }} role="img" aria-label="Comparaison des stratégies">
         <ResponsiveContainer>
           <LineChart data={data} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
@@ -310,11 +315,11 @@ export function CompareChart({ items, metric, height = 340 }: { items: { id: str
             <Tooltip cursor={{ stroke: c["c-axis"], strokeDasharray: "3 3" }} content={({ active, payload, label }) =>
               active && payload?.length ? (
                 <TipBox title={dateLabel(label)} rows={items.map((it, i) => ({
-                  color: c.series[i], label: it.label, value: payload[0].payload[it.id] == null ? "—" : fmt(payload[0].payload[it.id] as number),
+                  color: color(i), label: it.label, dashed: it.bench, value: payload[0].payload[it.id] == null ? "—" : fmt(payload[0].payload[it.id] as number),
                 }))} />
               ) : null} />
             {items.map((it, i) => (
-              <Line key={it.id} type="monotone" dataKey={it.id} stroke={c.series[i]} strokeWidth={2} dot={false} connectNulls isAnimationActive={false} />
+              <Line key={it.id} type="monotone" dataKey={it.id} stroke={color(i)} strokeWidth={it.bench ? 1.5 : 2} strokeDasharray={it.bench ? "4 3" : undefined} dot={false} connectNulls isAnimationActive={false} />
             ))}
           </LineChart>
         </ResponsiveContainer>
@@ -351,6 +356,198 @@ export function ValueChart({ dates, values, height = 260, label = "Cours" }: { d
           <Area type="monotone" dataKey="v" stroke={c["c-1"]} strokeWidth={2} fill={c["c-1"]} fillOpacity={0.08} isAnimationActive={false} />
         </AreaChart>
       </ResponsiveContainer>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Multi-series performance (dashboard): base 100, toggleable series, zoom brush
+// ---------------------------------------------------------------------------------------------
+
+export interface PerfSeries { id: string; label: string; dates: string[]; values: (number | null)[]; bench?: boolean }
+
+export function PerformanceChart({ series, height = 340, focus, onFocus }: { series: PerfSeries[]; height?: number; focus?: string | null; onFocus?: (id: string) => void }) {
+  const c = useChartColors();
+  const [hidden, setHidden] = useState<string[]>([]);
+  let k = 0;
+  const colors = series.map((s) => (s.bench ? c["c-bench"] : c.series[k++ % c.series.length]));
+  const data = useMemo(() => {
+    const map = new Map<string, Record<string, number | string | null>>();
+    series.forEach((s) => s.dates.forEach((d, i) => {
+      const row = map.get(d) ?? { d };
+      row[s.id] = s.values[i];
+      map.set(d, row);
+    }));
+    return thin([...map.values()].sort((a, b) => String(a.d).localeCompare(String(b.d))));
+  }, [series]);
+  const toggle = (id: string) => setHidden((h) => (h.includes(id) ? h.filter((x) => x !== id) : [...h, id]));
+  return (
+    <div>
+      <div className="mb-3 flex flex-wrap gap-1.5" role="group" aria-label="Séries affichées">
+        {series.map((s, i) => {
+          const off = hidden.includes(s.id);
+          return (
+            <button key={s.id} type="button" onClick={() => toggle(s.id)} onDoubleClick={() => onFocus?.(s.id)} aria-pressed={!off}
+              title="Cliquer pour masquer / afficher"
+              className={`chip gap-1.5 transition ${off ? "opacity-40" : ""} ${focus === s.id ? "border-accent/60 text-ink" : ""}`}>
+              <svg width="14" height="4" aria-hidden="true"><line x1="0" y1="2" x2="14" y2="2" stroke={colors[i]} strokeWidth="2.5" strokeDasharray={s.bench ? "3 3" : undefined} strokeLinecap="round" /></svg>
+              {s.label}
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ height }} role="group" aria-label="Performance comparée en base 100 (le curseur sous le graphique permet de zoomer)">
+        <ResponsiveContainer>
+          <LineChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+            <CartesianGrid vertical={false} stroke={c["c-grid"]} />
+            <XAxis dataKey="d" tickFormatter={fmtDateTick} {...axisProps} />
+            <YAxis width={48} tickFormatter={(v) => String(Math.round(v))} {...axisProps} domain={["auto", "auto"]} />
+            <ReferenceLine y={100} stroke={c["c-axis"]} strokeOpacity={0.4} />
+            <Tooltip cursor={{ stroke: c["c-axis"], strokeDasharray: "3 3" }} content={({ active, payload, label }) =>
+              active && payload?.length ? (
+                <TipBox title={dateLabel(label)} rows={series.map((s, i) => ({ s, i })).filter(({ s }) => !hidden.includes(s.id)).map(({ s, i }) => {
+                  const v = payload[0].payload[s.id] as number | null | undefined;
+                  return { color: colors[i], label: s.label, value: v == null ? "—" : `${v.toFixed(1).replace(".", ",")} (${spct(v / 100 - 1)})`, dashed: s.bench };
+                })} />
+              ) : null} />
+            {series.map((s, i) => (
+              <Line key={s.id} type="monotone" dataKey={s.id} hide={hidden.includes(s.id)} stroke={colors[i]} strokeWidth={s.bench ? 1.5 : focus === s.id ? 2.5 : 1.75}
+                strokeDasharray={s.bench ? "4 3" : undefined} dot={false} connectNulls isAnimationActive={false} />
+            ))}
+            {data.length > 60 && <Brush dataKey="d" height={22} stroke={c["c-axis"]} fill="transparent" travellerWidth={8} tickFormatter={fmtDateTick} />}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      {data.length > 60 && <p className="mt-1 text-[11px] text-muted">Faites glisser les poignées sous le graphique pour zoomer sur une période.</p>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Risk analytics: rolling indicator, relative performance, contribution analysis
+// ---------------------------------------------------------------------------------------------
+
+export function RollingChart({ dates, a, b, fmt, benchName, label, height = 200 }: {
+  dates: string[]; a: (number | null)[]; b: (number | null)[]; fmt: (v: number) => string; benchName: string; label: string; height?: number;
+}) {
+  const c = useChartColors();
+  const data = useMemo(() => thin(dates.map((d, i) => ({ d, a: a[i], b: b[i] })).filter((r) => r.a != null || r.b != null)), [dates, a, b]);
+  return (
+    <div>
+      <div className="mb-3"><Legend items={[{ color: c["c-1"], label: "Stratégie" }, { color: c["c-bench"], label: benchName, dashed: true }]} /></div>
+      <div style={{ height }} role="img" aria-label={label}>
+        <ResponsiveContainer>
+          <LineChart data={data} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+            <CartesianGrid vertical={false} stroke={c["c-grid"]} />
+            <XAxis dataKey="d" tickFormatter={fmtDateTick} {...axisProps} />
+            <YAxis width={56} tickFormatter={fmt} {...axisProps} domain={["auto", "auto"]} />
+            <ReferenceLine y={0} stroke={c["c-axis"]} strokeOpacity={0.5} />
+            <Tooltip cursor={{ stroke: c["c-axis"], strokeDasharray: "3 3" }} content={({ active, payload, label: l }) =>
+              active && payload?.length ? (
+                <TipBox title={dateLabel(l)} rows={[
+                  { color: c["c-1"], label: "Stratégie", value: payload[0].payload.a == null ? "—" : fmt(payload[0].payload.a) },
+                  { color: c["c-bench"], label: benchName, value: payload[0].payload.b == null ? "—" : fmt(payload[0].payload.b), dashed: true },
+                ]} />
+              ) : null} />
+            <Line type="monotone" dataKey="b" stroke={c["c-bench"]} strokeWidth={1.5} strokeDasharray="4 3" dot={false} isAnimationActive={false} connectNulls />
+            <Line type="monotone" dataKey="a" stroke={c["c-1"]} strokeWidth={2} dot={false} isAnimationActive={false} connectNulls />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+export function RelativeChart({ dates, values, benchName, height = 200 }: { dates: string[]; values: (number | null)[]; benchName: string; height?: number }) {
+  const c = useChartColors();
+  const data = useMemo(() => thin(dates.map((d, i) => ({ d, v: values[i], pos: Math.max(values[i] ?? 0, 0), neg: Math.min(values[i] ?? 0, 0) }))), [dates, values]);
+  return (
+    <div style={{ height }} role="img" aria-label={`Avance ou retard cumulé de la stratégie sur ${benchName}`}>
+      <ResponsiveContainer>
+        <AreaChart data={data} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+          <CartesianGrid vertical={false} stroke={c["c-grid"]} />
+          <XAxis dataKey="d" tickFormatter={fmtDateTick} {...axisProps} />
+          <YAxis width={56} tickFormatter={(v) => spct(v)} {...axisProps} />
+          <ReferenceLine y={0} stroke={c["c-axis"]} />
+          <Tooltip cursor={{ stroke: c["c-axis"], strokeDasharray: "3 3" }} content={({ active, payload, label: l }) =>
+            active && payload?.length ? (
+              <TipBox title={dateLabel(l)} rows={[{ color: (payload[0].payload.v ?? 0) >= 0 ? c["c-pos"] : c["c-neg"], label: `vs ${benchName}`, value: spct(payload[0].payload.v) }]} />
+            ) : null} />
+          <Area type="monotone" dataKey="pos" stroke={c["c-pos"]} fill={c["c-pos"]} fillOpacity={0.2} strokeWidth={1.5} isAnimationActive={false} />
+          <Area type="monotone" dataKey="neg" stroke={c["c-neg"]} fill={c["c-neg"]} fillOpacity={0.2} strokeWidth={1.5} isAnimationActive={false} />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+export function ContributionChart({ dates, invested, gains, height = 220 }: { dates: string[]; invested: (number | null)[]; gains: (number | null)[]; height?: number }) {
+  const c = useChartColors();
+  const data = useMemo(() => thin(dates.map((d, i) => ({ d, inv: invested[i], gp: Math.max(gains[i] ?? 0, 0), gn: Math.min(gains[i] ?? 0, 0), g: gains[i] }))), [dates, invested, gains]);
+  return (
+    <div>
+      <div className="mb-3"><Legend items={[{ color: c["c-invested"], label: "Capital versé", area: true }, { color: c["c-pos"], label: "Plus-values", area: true }, { color: c["c-neg"], label: "Moins-values", area: true }]} /></div>
+      <div style={{ height }} role="img" aria-label="Décomposition de la valeur : capital versé et plus ou moins-values">
+        <ResponsiveContainer>
+          <AreaChart data={data} margin={{ top: 4, right: 4, left: 0, bottom: 0 }} stackOffset="sign">
+            <CartesianGrid vertical={false} stroke={c["c-grid"]} />
+            <XAxis dataKey="d" tickFormatter={fmtDateTick} {...axisProps} />
+            <YAxis width={60} tickFormatter={(v) => short(v)} {...axisProps} />
+            <Tooltip cursor={{ stroke: c["c-axis"], strokeDasharray: "3 3" }} content={({ active, payload, label: l }) =>
+              active && payload?.length ? (
+                <TipBox title={dateLabel(l)} rows={[
+                  { color: c["c-invested"], label: "Versé", value: eur(payload[0].payload.inv) },
+                  { color: (payload[0].payload.g ?? 0) >= 0 ? c["c-pos"] : c["c-neg"], label: "+/- values", value: eur(payload[0].payload.g) },
+                ]} />
+              ) : null} />
+            <Area type="stepAfter" dataKey="inv" stackId="1" stroke="none" fill={c["c-invested"]} fillOpacity={0.6} isAnimationActive={false} />
+            <Area type="linear" dataKey="gp" stackId="1" stroke={c["c-pos"]} fill={c["c-pos"]} fillOpacity={0.3} isAnimationActive={false} />
+            <Area type="linear" dataKey="gn" stackId="1" stroke={c["c-neg"]} fill={c["c-neg"]} fillOpacity={0.3} isAnimationActive={false} />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+export function AllocationDonut({ items, cash, size = 200 }: { items: { symbol: string; name: string; value: number }[]; cash: number; size?: number }) {
+  const c = useChartColors();
+  const total = items.reduce((a, x) => a + x.value, 0) + Math.max(cash, 0);
+  const sorted = [...items].sort((a, b) => b.value - a.value);
+  const top = sorted.slice(0, 7);
+  const other = sorted.slice(7).reduce((a, x) => a + x.value, 0);
+  const slices = [
+    ...top.map((x, i) => ({ label: x.name, value: x.value, color: c.series[i] })),
+    ...(other > 0 ? [{ label: `Autres (${sorted.length - 7})`, value: other, color: c["c-bench"] }] : []),
+    ...(cash > 0.5 ? [{ label: "Liquidités", value: cash, color: c["c-invested"] }] : []),
+  ];
+  return (
+    <div className="flex flex-col items-center gap-5 sm:flex-row sm:items-start">
+      <div style={{ width: size, height: size }} className="relative shrink-0" role="img" aria-label="Répartition du portefeuille">
+        <ResponsiveContainer>
+          <PieChart>
+            <Pie data={slices} dataKey="value" nameKey="label" innerRadius="62%" outerRadius="100%" paddingAngle={1} stroke="rgb(var(--surface))" strokeWidth={2} isAnimationActive={false}>
+              {slices.map((s, i) => <Cell key={i} fill={s.color} />)}
+            </Pie>
+            <Tooltip content={({ active, payload }) => active && payload?.length ? (
+              <TipBox title={String(payload[0].name)} rows={[{ color: (payload[0].payload as { color: string }).color, label: "Poids", value: pct((payload[0].value as number) / total) }]} />
+            ) : null} />
+          </PieChart>
+        </ResponsiveContainer>
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+          <span className="num text-lg font-semibold">{short(total)} €</span>
+          <span className="text-[11px] text-muted">{items.length} ligne{items.length > 1 ? "s" : ""}</span>
+        </div>
+      </div>
+      <ul className="w-full min-w-0 space-y-1.5 text-sm">
+        {slices.map((s) => (
+          <li key={s.label} className="flex items-center gap-2">
+            <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: s.color }} />
+            <span className="min-w-0 flex-1 truncate text-ink2">{s.label}</span>
+            <span className="num">{pct(s.value / total)}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

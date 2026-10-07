@@ -52,10 +52,46 @@ class Param:
 
 @dataclass
 class Note:
-    """Why the strategy wants (or does not want) an asset on a given day."""
+    """Why the strategy wants (or does not want) an asset on a given day.
+
+    `explain` is the structured form of `reason`, rendered visually by the UI:
+    `facts` are the measured values, `checks` the rule's conditions with their
+    thresholds and whether they held. Labels may contain `{asset}` /
+    `{benchmark}`, replaced by display names in the UI."""
 
     reason: str
     metrics: dict[str, float | None] = field(default_factory=dict)
+    explain: dict[str, Any] | None = None
+
+
+Fmt = str  # pct | num | z | int
+
+
+def fact(label: str, value: float | None, fmt: Fmt = "pct", *, subject: str | None = None, emphasis: bool = False) -> dict:
+    out: dict[str, Any] = {"label": label, "value": value, "fmt": fmt}
+    if subject:
+        out["subject"] = subject  # asset | benchmark | universe
+    if emphasis:
+        out["emphasis"] = True
+    return out
+
+
+_OPS = {">=": lambda a, b: a >= b, ">": lambda a, b: a > b, "<=": lambda a, b: a <= b, "<": lambda a, b: a < b}
+
+
+def check(label: str, value: float | None, op: str, threshold: float, fmt: Fmt = "pct") -> dict:
+    """A threshold condition of the rule, e.g. outperformance >= +5 %."""
+    passed = value is not None and _OPS[op](value, threshold)
+    return {"label": label, "value": value, "op": op, "threshold": threshold, "fmt": fmt, "passed": passed}
+
+
+def flag(label: str, passed: bool) -> dict:
+    """A yes/no condition without a measured value (e.g. a free slot in the portfolio)."""
+    return {"label": label, "passed": passed}
+
+
+def explain(facts: list[dict] | None = None, checks: list[dict] | None = None) -> dict:
+    return {"facts": facts or [], "checks": checks or []}
 
 
 @dataclass
@@ -85,6 +121,12 @@ class Strategy:
     params: ClassVar[list[Param]]
     default_rebalance: ClassVar[str] = "monthly"
     uses_benchmark: ClassVar[bool] = False
+    # Research metadata shown to users (no effect on the simulation)
+    family: ClassVar[str] = ""
+    complexity: ClassVar[int] = 1  # 1 simple … 3 advanced
+    horizon: ClassVar[str] = "Long terme"
+    risk_level: ClassVar[int] = 2  # 1 low … 3 high
+    risks: ClassVar[list[str]] = []
 
     def __init__(self, values: dict[str, Any] | None = None):
         values = values or {}
@@ -111,6 +153,8 @@ class Strategy:
             "params": [p.as_dict() for p in cls.params],
             "default_rebalance": cls.default_rebalance,
             "uses_benchmark": cls.uses_benchmark,
+            "family": cls.family, "complexity": cls.complexity, "horizon": cls.horizon,
+            "risk_level": cls.risk_level, "risks": cls.risks,
         }
 
 
