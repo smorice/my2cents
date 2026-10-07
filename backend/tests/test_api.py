@@ -178,6 +178,13 @@ def test_strategy_versioning_and_backtest(client):
     tl = client.get(f"{API}/backtests/{bid}/timeline").json()
     assert sum(len(x["buys"]) for x in tl) >= 1 and tl == sorted(tl, key=lambda x: x["date"])
     assert client.get(f"{API}/backtests/{bid}/assets/NOPE").status_code == 404
+    an = client.get(f"{API}/backtests/{bid}/analytics").json()
+    assert len(an["dates"]) == len(an["sharpe"]) and 0 <= an["win_rate"] <= 1
+    w = client.get(f"{API}/backtests/{bid}/window", params={"period": "1Y"}).json()
+    assert w["strategy"][0] == 100 and w["metrics"]["volatility"] > 0
+    dash = client.get(f"{API}/dashboard/performance", params={"period": "3Y"}).json()
+    assert dash["focus"] == bid and dash["items"][0]["values"][0] == 100 and "win_rate" in dash["items"][0]
+    assert client.get(f"{API}/dashboard/performance", params={"period": "2W"}).status_code == 422
     assert client.get(f"{API}/backtests/{bid}/export/trades.csv").status_code == 200
     cmp_ = client.get(f"{API}/backtests/compare", params={"ids": bid}).json()
     assert cmp_[0]["series"]["twr"]

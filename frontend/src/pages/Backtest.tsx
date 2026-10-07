@@ -2,16 +2,17 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, Download, GitCompareArrows, RotateCcw, Trash2 } from "lucide-react";
 import { Fragment, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { AllocationChart, DrawdownChart, EquityChart, MonthlyHeatmap, YearlyBars } from "../components/charts";
+import { AllocationChart, AllocationDonut, ContributionChart, DrawdownChart, EquityChart, MonthlyHeatmap, RelativeChart, RollingChart, YearlyBars } from "../components/charts";
+
 import { AssetStory, DecisionDetail, TradeTimeline } from "../components/Explain";
-import { Badge, Card, ErrorNote, Help, Loading, Modal, Notice, PageHeader, Pagination, Spinner, Stat, Tabs, toast } from "../components/ui";
+import { Badge, Card, ErrorNote, Help, Loading, Modal, Notice, PageHeader, Pagination, Segmented, Spinner, Stat, Tabs, toast } from "../components/ui";
 import { api, exportUrl } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { date, dateTime, days, eur, num, pct, ratio, spct, tone } from "../lib/format";
 import { ACTION, FREQ, METRIC_HELP, STATUS } from "../lib/labels";
 import type { BacktestFull, Decision, Metrics, Page, Results, Trade } from "../lib/types";
 
-type Tab = "perf" | "alloc" | "decisions" | "trades" | "contrib" | "assumptions";
+type Tab = "perf" | "risk" | "alloc" | "decisions" | "trades" | "contrib" | "assumptions";
 
 export function Verdict({ s, b, bench }: { s: Metrics; b: Metrics; bench: string }) {
   const diff = (s.cagr ?? 0) - (b.cagr ?? 0);
@@ -189,6 +190,41 @@ function TradesTable({ bt, r, onAsset }: { bt: BacktestFull; r: Results; onAsset
   );
 }
 
+interface Analytics {
+  window_days: number; dates: string[]; volatility: (number | null)[]; benchmark_volatility: (number | null)[];
+  sharpe: (number | null)[]; benchmark_sharpe: (number | null)[]; relative: (number | null)[];
+  invested: (number | null)[]; gains: (number | null)[]; win_rate: number | null; closed_trades: number;
+}
+
+function RiskAnalysis({ bt, bench, dca }: { bt: BacktestFull; bench: string; dca: boolean }) {
+  const [days, setDays] = useState<"63" | "126" | "252">("126");
+  const q = useQuery({ queryKey: ["analytics", bt.id, days], queryFn: () => api<Analytics>(`/backtests/${bt.id}/analytics`, { params: { days } }), placeholderData: (p) => p });
+  if (q.isLoading) return <Loading />;
+  if (q.error) return <ErrorNote error={q.error} />;
+  const a = q.data!;
+  const win = <Segmented size="sm" value={days} onChange={setDays} options={[{ value: "63", label: "3 mois" }, { value: "126", label: "6 mois" }, { value: "252", label: "1 an" }]} />;
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-6 xl:grid-cols-2">
+        <Card title="Volatilité glissante" subtitle="Écart-type annualisé des rendements sur la fenêtre choisie" actions={win}>
+          <RollingChart dates={a.dates} a={a.volatility} b={a.benchmark_volatility} fmt={(v) => pct(v)} benchName={bench} label="Volatilité glissante" />
+        </Card>
+        <Card title="Sharpe glissant" subtitle="Rendement excédentaire par unité de risque, sur la même fenêtre" actions={win}>
+          <RollingChart dates={a.dates} a={a.sharpe} b={a.benchmark_sharpe} fmt={(v) => ratio(v)} benchName={bench} label="Ratio de Sharpe glissant" />
+        </Card>
+      </div>
+      <div className="grid gap-6 xl:grid-cols-2">
+        <Card title="Performance relative" subtitle={`Avance (vert) ou retard (rouge) cumulé sur ${bench}, hors effet des versements`}>
+          <RelativeChart dates={a.dates} values={a.relative} benchName={bench} />
+        </Card>
+        <Card title="Analyse des contributions" subtitle={dca ? "Ce qui vient de vos versements, et ce qui vient du marché" : "Capital de départ et plus ou moins-values"}>
+          <ContributionChart dates={a.dates} invested={a.invested} gains={a.gains} />
+        </Card>
+      </div>
+    </div>
+  );
+}
+
 export function BacktestView({ bt }: { bt: BacktestFull }) {
   const [tab, setTab] = useState<Tab>("perf");
   const [asset, setAsset] = useState<string | null>(null);
@@ -216,6 +252,7 @@ export function BacktestView({ bt }: { bt: BacktestFull }) {
 
       <Tabs value={tab} onChange={setTab} tabs={[
         { value: "perf", label: "Performance" },
+        { value: "risk", label: "Risque & relatif" },
         { value: "alloc", label: "Positions & allocation", count: r.positions.length },
         { value: "decisions", label: "Décisions", count: r.counts.decisions },
         { value: "trades", label: "Transactions", count: r.counts.trades },
@@ -239,8 +276,15 @@ export function BacktestView({ bt }: { bt: BacktestFull }) {
         </div>
       )}
 
+      {tab === "risk" && <RiskAnalysis bt={bt} bench={bench} dca={dca} />}
+
       {tab === "alloc" && (
         <div className="space-y-6">
+          {r.positions.length > 0 && (
+            <Card title={`Répartition au ${date(r.effective_period.end)}`} subtitle="Poids des lignes et des liquidités en fin de simulation">
+              <AllocationDonut items={r.positions.map((p) => ({ symbol: p.symbol, name: p.name, value: p.value }))} cash={(s.final_value ?? 0) - r.positions.reduce((x, p) => x + p.value, 0)} />
+            </Card>
+          )}
           <Card title="Allocation dans le temps" subtitle="Poids de chaque ligne en début de mois (7 principales lignes, le reste regroupé)">
             <AllocationChart history={r.allocation_history} names={r.names} />
           </Card>

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, defer
 from .. import audit, runner
 from ..db import get_db
 from ..deps import require
+from ..engine import analytics
 from ..marketdata.service import load_panel
 from ..models import Backtest, BacktestDecision, BacktestPosition, BacktestTransaction, Job, User
 from ..rbac import Perm
@@ -86,7 +87,7 @@ def list_backtests(
     status: str | None = None,
     include_portfolios: bool = False,
     page: int = Query(1, ge=1),
-    page_size: int = Query(25, ge=1, le=100),
+    page_size: int = Query(25, ge=1, le=500),
     user: User = Depends(require(Perm.BACKTEST_READ)),
     db: Session = Depends(get_db),
 ):
@@ -185,6 +186,38 @@ def transactions(
     rows = db.scalars(stmt.order_by(T.date.desc(), T.seq.desc()).offset((page - 1) * page_size).limit(page_size)).all()
     symbols = db.scalars(select(T.symbol).where(T.backtest_id == bt.id).distinct().order_by(T.symbol)).all()
     return _page(total, page, page_size, [_trade(t) for t in rows], symbols=symbols)
+
+
+def win_rate(db: Session, backtest_id: uuid.UUID) -> dict:
+    """Share of closing sales that realised a gain (only meaningful for strategies that sell)."""
+    T = BacktestTransaction
+    wins, total = db.execute(select(
+        func.count().filter(T.realized_pnl > 0), func.count()
+    ).where(T.backtest_id == backtest_id, T.side == "sell", T.realized_pnl.is_not(None))).one()
+    return {"win_rate": (wins / total) if total else None, "closed_trades": total}
+
+
+@router.get("/{backtest_id}/analytics")
+def backtest_analytics(backtest_id: uuid.UUID, days: int = Query(126, ge=21, le=504),
+                       user: User = Depends(require(Perm.BACKTEST_READ)), db: Session = Depends(get_db)):
+    bt = _own(db, user, backtest_id)
+    if bt.status != "done":
+        raise HTTPException(409, "Backtest non terminé")
+    return {**analytics.rolling(bt.results["series"], days, bt.config.get("risk_free_pct", 2.0)), **win_rate(db, bt.id)}
+
+
+@router.get("/{backtest_id}/window")
+def backtest_window(backtest_id: uuid.UUID, period: str = "MAX",
+                    user: User = Depends(require(Perm.BACKTEST_READ)), db: Session = Depends(get_db)):
+    bt = _own(db, user, backtest_id)
+    if bt.status != "done" or period not in analytics.PERIODS:
+        raise HTTPException(404, "Période indisponible")
+    s = bt.results["series"]
+    first, last = date.fromisoformat(s["dates"][0]), date.fromisoformat(s["dates"][-1])
+    w = analytics.window(s, analytics.period_start(period, first, last), last, bt.config.get("risk_free_pct", 2.0))
+    if w is None:
+        raise HTTPException(404, "Période trop courte")
+    return {**w, "period": period}
 
 
 @router.get("/{backtest_id}/timeline")

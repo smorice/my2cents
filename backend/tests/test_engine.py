@@ -178,3 +178,25 @@ def test_trade_decisions_are_explained(kind, params):
         assert ex and (ex["facts"] or ex["checks"])
         if d["action"] == "buy" and kind != "buy_and_hold":
             assert all(c["passed"] for c in ex["checks"]), (d["reason"], ex)
+
+
+def test_window_and_rolling_analytics():
+    from datetime import date as d_
+
+    from app.engine import analytics
+
+    close, open_, b, bo = make_prices()
+    res = Backtester(build("buy_and_hold", {}), config(close, contributions=Contributions(amount=100, frequency="monthly")),
+                     close, open_, b, bo).run()
+    s = res["series"]
+    full = analytics.window(s, d_.fromisoformat(s["dates"][0]))
+    # Over the whole period the windowed TWR equals the engine's own.
+    assert full["metrics"]["total_return"] == pytest.approx(res["summary"]["strategy"]["total_return"], rel=1e-6)
+    assert full["strategy"][0] == 100
+    last = d_.fromisoformat(s["dates"][-1])
+    one_year = analytics.window(s, analytics.period_start("1Y", d_.fromisoformat(s["dates"][0]), last))
+    assert one_year["strategy"][0] == 100 and 240 < len(one_year["dates"]) < 270
+    assert analytics.period_start("YTD", d_(2000, 1, 1), last) == d_(last.year, 1, 1)
+    r = analytics.rolling(s, 63)
+    assert r["volatility"][10] is None and r["volatility"][-1] > 0
+    assert r["gains"][-1] == pytest.approx(res["summary"]["strategy"]["net_profit"], rel=1e-6)

@@ -1,3 +1,4 @@
+import uuid
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -7,6 +8,7 @@ from sqlalchemy.orm import Session, defer
 from .. import audit
 from ..db import get_db
 from ..deps import require
+from ..engine import analytics
 from ..marketdata.catalog import UNIVERSES
 from ..marketdata.providers import PROVIDERS, DataError
 from ..marketdata.service import sync_symbol
@@ -107,6 +109,52 @@ def _perf(db: Session, symbol: str) -> dict | None:
         "month": back(30), "ytd": (last / ytd_rows[-1] - 1) if ytd_rows else None, "year": back(365),
         "spark": [v for _, v in rows[-90:]],
     }
+
+
+@router.get("/dashboard/performance")
+def dashboard_performance(
+    period: str = "MAX", focus: uuid.UUID | None = None,
+    user: User = Depends(require(Perm.BACKTEST_READ)), db: Session = Depends(get_db),
+):
+    """« Comment mes stratégies auraient-elles performé ? » — the latest finished backtest of each
+    strategy, rebased to 100 over the chosen period, with the focus backtest's full metrics."""
+    from .backtests import win_rate
+
+    if period not in analytics.PERIODS:
+        raise HTTPException(422, "Période inconnue")
+    # Series are only loaded (lazily) for the backtests actually shown.
+    done = db.scalars(select(Backtest).options(defer(Backtest.results))
+                      .where(Backtest.owner_id == user.id, Backtest.status == "done", Backtest.portfolio_id.is_(None))
+                      .order_by(Backtest.finished_at.desc()).limit(60)).unique().all()
+    latest: dict = {}
+    for b in done:
+        latest.setdefault(b.strategy_id, b)
+    picked = list(latest.values())[:6]
+    if focus and not any(b.id == focus for b in picked):
+        extra = next((b for b in done if b.id == focus), None)
+        if extra:
+            picked = [extra] + picked[:5]
+    if not picked:
+        return {"period": period, "items": [], "focus": None}
+    focus_bt = next((b for b in picked if b.id == focus), picked[0])
+    last = max(date.fromisoformat(b.results["series"]["dates"][-1]) for b in picked)
+    first = min(date.fromisoformat(b.results["series"]["dates"][0]) for b in picked)
+    start = analytics.period_start(period, first, last)
+    items = []
+    for b in picked:
+        w = analytics.window(b.results["series"], start, last, b.config.get("risk_free_pct", 2.0))
+        if w is None:
+            continue
+        names = b.results.get("names", {})
+        items.append({
+            "id": str(b.id), "name": b.name, "strategy_name": b.strategy.name, "strategy_id": str(b.strategy_id),
+            "benchmark": b.config["benchmark"], "benchmark_name": names.get(b.config["benchmark"], b.config["benchmark"]),
+            "dates": w["dates"], "values": w["strategy"], "benchmark_values": w["benchmark"],
+            "metrics": w["metrics"], "benchmark_metrics": w["benchmark_metrics"], "start": w["start"], "end": w["end"],
+            **(win_rate(db, b.id) if b.id == focus_bt.id else {}),
+        })
+    return {"period": period, "start": start.isoformat(), "end": last.isoformat(), "items": items,
+            "focus": str(focus_bt.id) if any(i["id"] == str(focus_bt.id) for i in items) else (items[0]["id"] if items else None)}
 
 
 @router.get("/dashboard")
