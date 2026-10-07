@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: 246 246 243;
+  --surface: 255 255 255;
+  --raised: 250 250 248;
+  --line: 228 227 222;
+  --ink: 17 17 20;
+  --ink2: 82 81 78;
+  --muted: 128 127 121;
+  --accent: 74 58 167;
+  --accent-ink: 255 255 255;
+  --pos: 10 125 50;
+  --neg: 194 52 52;
+  --warn: 166 110 0;
+
+  /* chart roles (validated reference palette, light steps) */
+  --c-1: #2a78d6; --c-2: #eb6834; --c-3: #1baf7a; --c-4: #eda100;
+  --c-5: #e87ba4; --c-6: #008300; --c-7: #4a3aa7; --c-8: #e34948;
+  --c-bench: #8a8984; --c-grid: #ecebe7; --c-axis: #8a8984; --c-invested: #b9b8b2;
+  --c-pos: #0ca30c; --c-neg: #d03b3b; --c-mid: #f0efec;
+  color-scheme: light;
+}
+.dark {
+  --bg: 10 11 14;
+  --surface: 18 19 24;
+  --raised: 24 26 32;
+  --line: 38 40 50;
+  --ink: 236 237 242;
+  --ink2: 180 182 194;
+  --muted: 125 128 145;
+  --accent: 144 133 233;
+  --accent-ink: 12 10 30;
+  --pos: 74 201 110;
+  --neg: 236 112 112;
+  --warn: 245 185 66;
+
+  --c-1: #3987e5; --c-2: #d95926; --c-3: #199e70; --c-4: #c98500;
+  --c-5: #d55181; --c-6: #008300; --c-7: #9085e9; --c-8: #e66767;
+  --c-bench: #8d8f9c; --c-grid: #1f2129; --c-axis: #6f7282; --c-invested: #4a4c58;
+  --c-pos: #0ca30c; --c-neg: #d03b3b; --c-mid: #383835;
+  color-scheme: dark;
+}
+
+html, body, #root { height: 100%; }
+body {
+  @apply bg-bg text-ink font-sans antialiased;
+  font-feature-settings: "cv11", "ss01";
+}
+.num { font-variant-numeric: tabular-nums; }
+
+@layer components {
+  .card { @apply rounded-2xl border border-line bg-surface; }
+  .card-pad { @apply p-5 sm:p-6; }
+  .btn { @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 h-9 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60; }
+  .btn-primary { @apply btn bg-accent text-accent-ink hover:bg-accent/90; }
+  .btn-ghost { @apply btn text-ink2 hover:bg-raised hover:text-ink; }
+  .btn-outline { @apply btn border border-line text-ink hover:bg-raised; }
+  .btn-danger { @apply btn border border-neg/40 text-neg hover:bg-neg/10; }
+  .input { @apply h-9 w-full rounded-lg border border-line bg-raised px-3 text-sm text-ink placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/50 focus:border-accent/60; }
+  .label { @apply mb-1.5 block text-xs font-medium text-ink2; }
+  .hint { @apply mt-1 text-xs text-muted; }
+  .chip { @apply inline-flex items-center gap-1 rounded-full border border-line px-2 py-0.5 text-[11px] font-medium text-ink2; }
+  .eyebrow { @apply text-[11px] font-semibold uppercase tracking-[0.08em] text-muted; }
+  .table-base { @apply w-full text-sm; }
+  .table-base th { @apply px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wider text-muted border-b border-line whitespace-nowrap; }
+  .table-base td { @apply px-3 py-2.5 border-b border-line/60 align-top; }
+  .table-base tr:last-child td { @apply border-b-0; }
+}
+
+/* Recharts polish */
+.recharts-cartesian-axis-tick-value { fill: var(--c-axis); font-size: 11px; }
+.recharts-surface:focus, .recharts-wrapper:focus { outline: none; }

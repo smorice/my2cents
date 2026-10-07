@@ -1,0 +1,41 @@
+name: my2cents
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: my2cents
+      POSTGRES_USER: my2cents
+      POSTGRES_PASSWORD: ${MY2CENTS_DB_PASSWORD:?set MY2CENTS_DB_PASSWORD in .env}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U my2cents -d my2cents"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [internal]
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      MY2CENTS_DATABASE_URL: postgresql+psycopg://my2cents:${MY2CENTS_DB_PASSWORD}@db:5432/my2cents
+    networks:
+      internal: {}
+      proxy:
+        aliases: [my2cents-app]
+
+volumes:
+  db_data:
+
+networks:
+  internal: {}
+  proxy:
+    external: true
+    name: nayonne_proxy_net
