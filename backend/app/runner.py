@@ -7,7 +7,7 @@ import logging
 from datetime import date, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from . import audit, jobs
@@ -23,6 +23,8 @@ from .results import store_outputs, strip_rows
 from .schemas import BacktestIn
 
 log = logging.getLogger(__name__)
+
+MAX_ACTIVE_PER_USER = 12  # queued + running backtests per user, protects the shared worker
 
 FREQ_FR = {"daily": "quotidien", "weekly": "hebdomadaire", "monthly": "mensuel", "quarterly": "trimestriel", "yearly": "annuel", "never": "aucun"}
 
@@ -61,6 +63,9 @@ def resolve_config(strategy: Strategy, version: int, body: BacktestIn) -> dict:
 def create_backtest(db: Session, user: User, strategy: Strategy, body: BacktestIn, portfolio_id=None, request=None) -> Backtest:
     if strategy.status in ("inactive", "archived") and portfolio_id is None:
         raise HTTPException(409, "Stratégie désactivée : réactivez-la pour lancer un backtest.")
+    active = db.scalar(select(func.count()).select_from(Backtest).where(Backtest.owner_id == user.id, Backtest.status.in_(["queued", "running"])))
+    if active >= MAX_ACTIVE_PER_USER:
+        raise HTTPException(429, f"Vous avez déjà {active} simulations en cours : attendez qu'elles se terminent avant d'en lancer d'autres.")
     version = body.version or strategy.current_version
     cfg = resolve_config(strategy, version, body)
     bt = Backtest(

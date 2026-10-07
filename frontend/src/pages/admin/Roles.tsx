@@ -21,7 +21,7 @@ export function RolesPage() {
       <PageHeader eyebrow="Administration" title="Rôles et permissions" description="Contrôle d'accès par rôles (RBAC). Les permissions sont explicites ; un utilisateur cumule celles de tous ses rôles."
         actions={<button className="btn-primary" onClick={() => setEdit({ name: "", description: "", permissions: [], isNew: true })}><Plus size={15} /> Nouveau rôle</button>} />
       <Card pad={false}>
-        <div className="overflow-x-auto px-3 py-3">
+        <div tabIndex={0} className="overflow-x-auto px-3 py-3">
           <table className="table-base">
             <thead>
               <tr><th>Permission</th>{roles.data!.map((r) => (

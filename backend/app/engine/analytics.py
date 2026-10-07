@@ -32,6 +32,15 @@ def period_start(period: str, first: date, last: date) -> date:
     return max(start, first)
 
 
+def downsample_index(n: int, target: int = 600) -> list[int]:
+    """Evenly spaced indices (always keeping the first and last point) for display series."""
+    if n <= target:
+        return list(range(n))
+    step = n / target
+    idx = sorted({int(i * step) for i in range(target)} | {n - 1})
+    return idx
+
+
 def _frame(series: dict) -> pd.DataFrame:
     idx = pd.DatetimeIndex(pd.to_datetime(series["dates"]))
     df = pd.DataFrame({"equity": series["equity"], "invested": series["invested"], "bench": series["benchmark_equity"]}, index=idx, dtype=float)

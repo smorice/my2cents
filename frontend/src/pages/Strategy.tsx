@@ -244,7 +244,7 @@ export function StrategyPage() {
           </Card>
           <Card title="Backtests de cette stratégie" pad={false}>
             {runs.data?.items.length ? (
-              <div className="overflow-x-auto px-2 pb-3">
+              <div tabIndex={0} className="overflow-x-auto px-2 pb-3">
                 <table className="table-base">
                   <thead><tr><th>Date</th><th>Période</th><th>Version</th><th className="text-right">CAGR</th><th className="text-right">Indice</th><th className="text-right">Max DD</th><th className="text-right">Sharpe</th></tr></thead>
                   <tbody>

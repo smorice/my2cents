@@ -30,7 +30,7 @@ export function UsersPage() {
       <Card pad={false}>
         <div className="p-4"><div className="relative max-w-sm"><Search size={15} className="absolute left-3 top-2.5 text-muted" /><input className="input pl-9" placeholder="Email ou nom…" value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }} /></div></div>
         {users.isLoading ? <Loading /> : (
-          <div className="overflow-x-auto px-3 pb-3">
+          <div tabIndex={0} className="overflow-x-auto px-3 pb-3">
             <table className="table-base">
               <thead><tr><th>Utilisateur</th><th>Rôles</th><th>Statut</th><th>MFA</th><th>Dernière connexion</th><th /></tr></thead>
               <tbody>

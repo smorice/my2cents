@@ -125,7 +125,7 @@ export function DataTable<T>({
           {csvName && <button type="button" className="btn-ghost h-9 text-xs" onClick={download}><Download size={14} /> CSV</button>}
         </div>
       </div>
-      <div className="overflow-x-auto">
+      <div tabIndex={0} className="overflow-x-auto">
         <table className="table-base">
           <thead>
             <tr>

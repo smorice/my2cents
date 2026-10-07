@@ -60,7 +60,7 @@ export function AuditPage() {
           <div className="flex gap-2 sm:col-span-2 lg:col-span-1"><input type="date" className="input" value={f.from} onChange={(e) => set("from", e.target.value)} aria-label="Du" /><input type="date" className="input" value={f.to} onChange={(e) => set("to", e.target.value)} aria-label="Au" /></div>
         </div>
         {q.isLoading ? <Loading /> : (
-          <div className="overflow-x-auto px-3 pb-3">
+          <div tabIndex={0} className="overflow-x-auto px-3 pb-3">
             <table className="table-base">
               <thead><tr><th>#</th><th>Date</th><th>Utilisateur</th><th>Action</th><th>Ressource</th><th>Résultat</th><th>IP</th></tr></thead>
               <tbody>

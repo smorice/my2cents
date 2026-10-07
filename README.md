@@ -48,12 +48,28 @@ frontend/              React + Vite + TypeScript + Tailwind + React Query + Rech
 - **Biais du survivant** : l'univers CAC 40 est la composition récente ; c'est indiqué dans chaque backtest.
 - Chaque backtest fige la version de stratégie et sa configuration complète → reproductible.
 
+## Parcours et écrans
+
+Landing publique (avec une vraie simulation sur données historiques) → inscription → onboarding en 5 étapes →
+tableau de bord (« Comment mes stratégies auraient-elles performé ? », périodes 1M→MAX). Ensuite : Research
+(familles de stratégies), bibliothèque de stratégies (versions, fiche, risques), laboratoire `/backtests/new`,
+rapport de backtest (performance, risque glissant, allocation, décisions expliquées, transactions, versements,
+hypothèses), Strategy Lab `/compare`, portefeuilles simulés, transactions, activité personnelle `/audit`.
+Administration `/admin` : vue d'ensemble, tâches (relance / annulation), erreurs, données de marché, stratégies,
+utilisateurs, rôles, journal d'audit.
+
+Chaque décision simulée porte une explication structurée (mesures, seuils de la règle, verdict) et chaque
+transaction référence la décision qui l'a déclenchée.
+
 ## Sécurité et traçabilité
 
 - Mots de passe Argon2, politique de robustesse, verrouillage après 5 échecs, limitation par IP.
 - Sessions serveur (cookie HttpOnly, Secure, SameSite=Strict), expiration d'inactivité et absolue, révocables.
 - MFA TOTP optionnelle. En-tête anti-CSRF obligatoire sur toute requête d'écriture. CSP stricte.
 - RBAC : `USER`, `ADMIN`, `RESEARCHER`, `AUDITOR`, `READ_ONLY` ; rôles personnalisés via l'admin.
+- Limitation de débit par IP sur toute l'API (lectures / écritures), quota de simulations actives par utilisateur.
+- Erreurs inattendues : l'utilisateur reçoit une référence, l'administrateur la trace complète (`/admin/errors`).
+- Accessibilité vérifiée avec axe-core (WCAG 2.2 AA) sur les pages principales, thèmes clair et sombre.
 - Audit : tables `audit_events` et `strategy_versions` protégées par triggers (UPDATE/DELETE/TRUNCATE interdits),
   événements chaînés par empreinte SHA-256 vérifiable depuis l'interface.
 

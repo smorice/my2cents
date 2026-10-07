@@ -144,7 +144,7 @@ export function ComparePage() {
             ]} />
           </Card>
           <Card title="Classement" subtitle="Cliquez un en-tête pour trier. En violet : la meilleure valeur de la colonne." pad={false}>
-            <div className="overflow-x-auto px-3 pb-3">
+            <div tabIndex={0} className="overflow-x-auto px-3 pb-3">
               <table className="table-base">
                 <thead>
                   <tr>

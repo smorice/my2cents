@@ -109,18 +109,22 @@ function DecisionExplorer({ bt, names, onAsset }: { bt: BacktestFull; names: Rec
       </div>
       {q.isLoading ? <Loading /> : (
         <>
-          <div className="overflow-x-auto">
+          <div tabIndex={0} className="overflow-x-auto">
             <table className="table-base">
               <thead><tr><th>Date</th><th>Actif</th><th>Décision</th><th className="text-right">Poids</th><th>Pourquoi</th></tr></thead>
               <tbody>
                 {q.data!.items.map((d, i) => (
                   <Fragment key={d.seq}>
-                    <tr className="cursor-pointer hover:bg-raised/50" onClick={() => setOpen(open === i ? null : i)} aria-expanded={open === i}>
+                    <tr className="cursor-pointer hover:bg-raised/50" onClick={() => setOpen(open === i ? null : i)}>
                       <td className="num whitespace-nowrap text-ink2">{date(d.date)}</td>
                       <td className="whitespace-nowrap"><AssetButton symbol={d.symbol} names={names} onAsset={onAsset} /></td>
                       <td><Badge className={ACTION[d.action].cls}>{ACTION[d.action].label}</Badge></td>
                       <td className="num whitespace-nowrap text-right">{pct(d.prev_weight)} <span className="text-muted">→</span> {pct(d.target_weight)}</td>
-                      <td className="min-w-[280px] text-ink2"><span className="flex items-start gap-1"><ChevronRight size={14} className={`mt-0.5 shrink-0 text-muted transition ${open === i ? "rotate-90" : ""}`} />{d.reason}</span></td>
+                      <td className="min-w-[280px] text-ink2">
+                        <button type="button" className="flex items-start gap-1 text-left" aria-expanded={open === i} onClick={(e) => { e.stopPropagation(); setOpen(open === i ? null : i); }}>
+                          <ChevronRight size={14} className={`mt-0.5 shrink-0 text-muted transition ${open === i ? "rotate-90" : ""}`} aria-hidden="true" />{d.reason}
+                        </button>
+                      </td>
                     </tr>
                     {open === i && (
                       <tr><td colSpan={5} className="bg-raised/30 !p-4 sm:!p-5"><DecisionDetail bt={bt} d={d} names={names} /></td></tr>
@@ -159,7 +163,7 @@ function TradesTable({ bt, r, onAsset }: { bt: BacktestFull; r: Results; onAsset
       </div>
       {q.isLoading ? <Loading /> : q.error ? <ErrorNote error={q.error} /> : (
         <>
-          <div className="overflow-x-auto">
+          <div tabIndex={0} className="overflow-x-auto">
             <table className="table-base">
               <thead><tr><th>Date</th><th>Actif</th><th>Sens</th><th className="text-right">Quantité</th><th className="text-right">Prix</th><th className="text-right">Montant</th><th className="text-right">Frais</th><th className="text-right">P/L réalisé</th><th>Motif</th><th><span className="sr-only">Décision</span></th></tr></thead>
               <tbody>
@@ -270,7 +274,7 @@ export function BacktestView({ bt, hideSummary }: { bt: BacktestFull; hideSummar
             <Card title="Performance annuelle"><YearlyBars rows={r.yearly} benchName={bench} /></Card>
           </div>
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
-            <Card title="Indicateurs détaillés" subtitle={`Indice : ${bench}`} pad={false}><div className="overflow-x-auto px-3 pb-3"><MetricsTable s={s} b={b} /></div></Card>
+            <Card title="Indicateurs détaillés" subtitle={`Indice : ${bench}`} pad={false}><div tabIndex={0} className="overflow-x-auto px-3 pb-3"><MetricsTable s={s} b={b} /></div></Card>
             <Card title="Rendements mensuels"><MonthlyHeatmap rows={r.monthly_returns} yearly={r.yearly} /></Card>
           </div>
         </div>
@@ -291,7 +295,7 @@ export function BacktestView({ bt, hideSummary }: { bt: BacktestFull; hideSummar
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
             <Card title={`Positions au ${date(r.effective_period.end)}`} pad={false}>
               {r.positions.length === 0 ? <p className="px-6 pb-6 text-sm text-muted">Portefeuille entièrement en liquidités en fin de période.</p> : (
-                <div className="overflow-x-auto px-3 pb-3">
+                <div tabIndex={0} className="overflow-x-auto px-3 pb-3">
                   <table className="table-base">
                     <thead><tr><th>Actif</th><th className="text-right">Poids</th><th className="text-right">Valeur</th><th className="text-right">PRU</th><th className="text-right">Cours</th><th className="text-right">+/- latente</th></tr></thead>
                     <tbody>
@@ -348,7 +352,7 @@ export function BacktestView({ bt, hideSummary }: { bt: BacktestFull; hideSummar
       <AssetStory bt={bt} symbol={asset} names={r.names} onClose={() => setAsset(null)} />
       {tab === "contrib" && (
         <Card title="Historique des versements" actions={<a className="btn-ghost h-8 text-xs" href={exportUrl(bt.id, "contributions")}><Download size={14} /> CSV</a>} pad={false}>
-          <div className="max-h-[560px] overflow-auto px-3 pb-3">
+          <div tabIndex={0} className="max-h-[560px] overflow-auto px-3 pb-3">
             <table className="table-base">
               <thead className="sticky top-0 bg-surface"><tr><th>Date</th><th className="text-right">Versement</th><th className="text-right">Cumul versé</th><th className="text-right">Valeur du portefeuille</th><th className="text-right">+/- latente</th></tr></thead>
               <tbody>

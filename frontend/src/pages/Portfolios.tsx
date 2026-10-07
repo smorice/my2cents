@@ -201,7 +201,7 @@ export function PortfolioPage() {
       {simId && (bt.isLoading ? <Loading /> : bt.data && <><Overview bt={bt.data} /><BacktestView bt={bt.data} hideSummary /></>)}
       {pf.history && pf.history.length > 1 && (
         <Card title="Simulations précédentes" className="mt-6" pad={false}>
-          <div className="overflow-x-auto px-3 pb-3">
+          <div tabIndex={0} className="overflow-x-auto px-3 pb-3">
             <table className="table-base">
               <thead><tr><th>Date</th><th>Version</th><th className="text-right">Valeur finale</th><th className="text-right">TRI</th><th /></tr></thead>
               <tbody>{pf.history.map((h) => (

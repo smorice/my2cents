@@ -200,3 +200,17 @@ def test_window_and_rolling_analytics():
     r = analytics.rolling(s, 63)
     assert r["volatility"][10] is None and r["volatility"][-1] > 0
     assert r["gains"][-1] == pytest.approx(res["summary"]["strategy"]["net_profit"], rel=1e-6)
+
+
+def test_benchmark_comparison_is_like_for_like():
+    """Holding the benchmark itself, without costs, must reproduce the benchmark line exactly,
+    contributions included: same cash flows, same execution prices, same valuation."""
+    close, open_, b, bo = make_prices()
+    uni = pd.DataFrame({"IDX": b})
+    uni_open = pd.DataFrame({"IDX": bo})
+    cfg = config(uni, universe=["IDX"], contributions=Contributions(amount=250, frequency="monthly"))
+    res = Backtester(build("buy_and_hold", {}), cfg, uni, uni_open, b, bo).run()
+    s = res["series"]
+    assert s["equity"][-1] == pytest.approx(s["benchmark_equity"][-1], rel=1e-6)
+    assert res["summary"]["strategy"]["cagr"] == pytest.approx(res["summary"]["benchmark"]["cagr"], abs=1e-6)
+    assert s["invested"][-1] == pytest.approx(10_000 + 250 * len(res["contributions"]))

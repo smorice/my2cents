@@ -171,11 +171,11 @@ export function MonthlyHeatmap({ rows, yearly }: { rows: { year: number; month: 
   const max = Math.max(0.02, ...rows.map((r) => Math.abs(r.return ?? 0)));
   const bg = (v: number | null) => {
     if (v == null) return undefined;
-    const a = Math.min(Math.abs(v) / max, 1) * 0.55 + 0.06;
+    const a = Math.min(Math.abs(v) / max, 1) * 0.39 + 0.06; // ≤ 0.45 keeps the cell text above 4.5:1 in both themes
     return v >= 0 ? `rgb(var(--pos) / ${a})` : `rgb(var(--neg) / ${a})`;
   };
   return (
-    <div className="overflow-x-auto">
+    <div tabIndex={0} className="overflow-x-auto">
       <table className="w-full min-w-[720px] border-separate border-spacing-[2px] text-[11px]">
         <thead>
           <tr>
@@ -396,7 +396,7 @@ export function PerformanceChart({ series, height = 340, focus, onFocus }: { ser
           );
         })}
       </div>
-      <div style={{ height }} role="img" aria-label="Performance comparée en base 100">
+      <div style={{ height }} role="group" aria-label="Performance comparée en base 100 (le curseur sous le graphique permet de zoomer)">
         <ResponsiveContainer>
           <LineChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
             <CartesianGrid vertical={false} stroke={c["c-grid"]} />

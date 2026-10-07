@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import bootstrap
+from . import audit, bootstrap, ratelimit
 from .config import get_settings
 from .deps import csrf_guard
 from .observability import new_request_id, record_error, request_id_var, setup_logging, user_id_var
@@ -57,8 +57,16 @@ async def security_headers(request: Request, call_next):
     request_id_var.set(rid)
     user_id_var.set(None)
     started = time.perf_counter()
+    wait = None
+    if request.url.path.startswith(f"{BASE}/api") and request.url.path != f"{BASE}/api/health":
+        wait = ratelimit.check(audit.client_ip(request) or "?", request.method)
     try:
-        response = await call_next(request)
+        if wait is not None:
+            log.warning("rate limited", extra={"path": request.url.path, "ip": audit.client_ip(request)})
+            response = JSONResponse(status_code=429, headers={"Retry-After": str(int(wait) + 1)},
+                                    content={"detail": "Trop de requêtes en peu de temps : patientez quelques secondes."})
+        else:
+            response = await call_next(request)
     except Exception as exc:  # noqa: BLE001 - last resort: never leak internals to the client
         ref = record_error(exc, source="api", method=request.method, path=request.url.path, request_id=rid,
                            user_id=getattr(request.state, "user_id", None))

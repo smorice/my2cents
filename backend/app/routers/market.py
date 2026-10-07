@@ -111,6 +111,9 @@ def _perf(db: Session, symbol: str) -> dict | None:
     }
 
 
+_PERF_CACHE: dict[tuple, dict] = {}
+
+
 @router.get("/dashboard/performance")
 def dashboard_performance(
     period: str = "MAX", focus: uuid.UUID | None = None,
@@ -137,6 +140,11 @@ def dashboard_performance(
     if not picked:
         return {"period": period, "items": [], "focus": None}
     focus_bt = next((b for b in picked if b.id == focus), picked[0])
+    # Finished backtests never change: the computed view is cached on their ids and finish times.
+    key = (user.id, period, focus_bt.id, tuple((b.id, b.finished_at) for b in picked))
+    hit = _PERF_CACHE.get(key)
+    if hit is not None:
+        return hit
     last = max(date.fromisoformat(b.results["series"]["dates"][-1]) for b in picked)
     first = min(date.fromisoformat(b.results["series"]["dates"][0]) for b in picked)
     start = analytics.period_start(period, first, last)
@@ -146,15 +154,21 @@ def dashboard_performance(
         if w is None:
             continue
         names = b.results.get("names", {})
+        keep = analytics.downsample_index(len(w["dates"]))
         items.append({
             "id": str(b.id), "name": b.name, "strategy_name": b.strategy.name, "strategy_id": str(b.strategy_id),
             "benchmark": b.config["benchmark"], "benchmark_name": names.get(b.config["benchmark"], b.config["benchmark"]),
-            "dates": w["dates"], "values": w["strategy"], "benchmark_values": w["benchmark"],
+            "dates": [w["dates"][i] for i in keep], "values": [w["strategy"][i] for i in keep],
+            "benchmark_values": [w["benchmark"][i] for i in keep],
             "metrics": w["metrics"], "benchmark_metrics": w["benchmark_metrics"], "start": w["start"], "end": w["end"],
             **(win_rate(db, b.id) if b.id == focus_bt.id else {}),
         })
-    return {"period": period, "start": start.isoformat(), "end": last.isoformat(), "items": items,
-            "focus": str(focus_bt.id) if any(i["id"] == str(focus_bt.id) for i in items) else (items[0]["id"] if items else None)}
+    out = {"period": period, "start": start.isoformat(), "end": last.isoformat(), "items": items,
+           "focus": str(focus_bt.id) if any(i["id"] == str(focus_bt.id) for i in items) else (items[0]["id"] if items else None)}
+    if len(_PERF_CACHE) > 500:
+        _PERF_CACHE.clear()
+    _PERF_CACHE[key] = out
+    return out
 
 
 @router.get("/dashboard")

@@ -162,7 +162,7 @@ function LabResult({ id }: { id: string }) {
       <Card title="Drawdown"><DrawdownChart s={r.series} benchName={bench} height={160} /></Card>
       <Card title="Derniers ordres" subtitle={`${r.counts.trades} transactions au total`} pad={false}
         actions={<Link to={`/backtests/${bt.id}`} className="btn-ghost h-8 text-xs">Tout voir</Link>}>
-        <div className="overflow-x-auto px-3 pb-3">
+        <div tabIndex={0} className="overflow-x-auto px-3 pb-3">
           <table className="table-base">
             <thead><tr><th>Date</th><th>Actif</th><th>Sens</th><th className="text-right">Montant</th></tr></thead>
             <tbody>

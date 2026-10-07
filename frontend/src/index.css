@@ -9,12 +9,12 @@
   --line: 228 227 222;
   --ink: 17 17 20;
   --ink2: 82 81 78;
-  --muted: 128 127 121;
+  --muted: 112 111 105;
   --accent: 74 58 167;
   --accent-ink: 255 255 255;
   --pos: 10 125 50;
   --neg: 194 52 52;
-  --warn: 166 110 0;
+  --warn: 140 92 0;
 
   /* chart roles (validated reference palette, light steps) */
   --c-1: #2a78d6; --c-2: #eb6834; --c-3: #1baf7a; --c-4: #eda100;
@@ -30,7 +30,7 @@
   --line: 38 40 50;
   --ink: 236 237 242;
   --ink2: 180 182 194;
-  --muted: 125 128 145;
+  --muted: 138 141 158;
   --accent: 144 133 233;
   --accent-ink: 12 10 30;
   --pos: 74 201 110;
@@ -52,7 +52,7 @@ body {
 .num { font-variant-numeric: tabular-nums; }
 
 @layer components {
-  .card { @apply rounded-2xl border border-line bg-surface; }
+  .card { @apply min-w-0 rounded-2xl border border-line bg-surface; }
   .card-pad { @apply p-5 sm:p-6; }
   .btn { @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 h-9 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60; }
   .btn-primary { @apply btn bg-accent text-accent-ink hover:bg-accent/90; }
@@ -76,3 +76,9 @@ body {
 /* Recharts polish */
 .recharts-cartesian-axis-tick-value { fill: var(--c-axis); font-size: 11px; }
 .recharts-surface:focus, .recharts-wrapper:focus { outline: none; }
+
+/* Keyboard users can scroll wide tables: their wrapper is focusable, so show where focus is. */
+[tabindex="0"]:focus-visible { outline: 2px solid rgb(var(--accent) / 0.6); outline-offset: 2px; border-radius: 8px; }
+
+/* Grid items default to min-width:auto, which lets a wide table or chart push the page sideways on mobile. */
+.grid > * { min-width: 0; }

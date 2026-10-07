@@ -40,7 +40,7 @@ export function TransactionsPage() {
           <input className="input w-36" placeholder="Symbole" value={symbol} onChange={(e) => { setSymbol(e.target.value.toUpperCase()); setPage(1); }} aria-label="Symbole" />
         </div>
         {q.isLoading ? <Loading /> : q.error ? <div className="p-4"><ErrorNote error={q.error} /></div> : (
-          <div className="overflow-x-auto px-3 pb-3">
+          <div tabIndex={0} className="overflow-x-auto px-3 pb-3">
             <table className="table-base">
               <thead><tr><th>Date</th><th>Actif</th><th>Sens</th><th className="text-right">Quantité</th><th className="text-right">Prix</th><th className="text-right">Montant</th><th className="text-right">P/L réalisé</th><th>Source</th></tr></thead>
               <tbody>
@@ -83,7 +83,7 @@ export function ActivityPage() {
         description="Le journal de vos actions importantes : connexions, simulations, modifications de stratégies et de portefeuilles. Il est infalsifiable (chaîné par empreintes) et conservé pour la traçabilité." />
       <Card pad={false}>
         {q.isLoading ? <Loading /> : (
-          <div className="overflow-x-auto px-3 py-3">
+          <div tabIndex={0} className="overflow-x-auto px-3 py-3">
             <table className="table-base">
               <thead><tr><th>Date</th><th>Action</th><th>Ressource</th><th>Résultat</th><th>Adresse IP</th></tr></thead>
               <tbody>

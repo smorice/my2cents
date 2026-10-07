@@ -164,7 +164,7 @@ export function DashboardPage() {
           {d.recent.length === 0 ? (
             <Empty title="Aucun backtest pour l'instant" action={<Link to="/strategies" className="btn-outline">Choisir une stratégie</Link>}>Lancez votre premier test depuis une stratégie modèle.</Empty>
           ) : (
-            <div className="overflow-x-auto px-2 pb-3">
+            <div tabIndex={0} className="overflow-x-auto px-2 pb-3">
               <table className="table-base">
                 <thead><tr><th>Backtest</th><th className="text-right">CAGR</th><th className="text-right">vs indice</th><th className="text-right">Max DD</th><th className="text-right">Sharpe</th></tr></thead>
                 <tbody>

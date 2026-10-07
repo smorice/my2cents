@@ -131,7 +131,7 @@ export function AdminJobsPage() {
           </select>
         </div>
         {q.isLoading ? <Loading /> : (
-          <div className="overflow-x-auto px-2 pb-3">
+          <div tabIndex={0} className="overflow-x-auto px-2 pb-3">
             <table className="table-base">
               <thead><tr><th>Créée</th><th>Type</th><th>Statut</th><th>Utilisateur</th><th className="text-right">Durée</th><th>Message</th><th /></tr></thead>
               <tbody>
@@ -139,8 +139,11 @@ export function AdminJobsPage() {
                   const dur = j.started_at && j.finished_at ? (new Date(j.finished_at).getTime() - new Date(j.started_at).getTime()) / 1000 : null;
                   return (
                     <Fragment key={j.id}>
-                      <tr className="cursor-pointer hover:bg-raised/50" onClick={() => setOpen(open === j.id ? null : j.id)} aria-expanded={open === j.id}>
-                        <td className="num whitespace-nowrap text-ink2">{dateTime(j.created_at)}</td>
+                      <tr className="cursor-pointer hover:bg-raised/50" onClick={() => setOpen(open === j.id ? null : j.id)}>
+                        <td className="num whitespace-nowrap text-ink2">
+                          <button type="button" className="text-left hover:text-ink" aria-expanded={open === j.id} aria-label={`Détails de la tâche du ${dateTime(j.created_at)}`}
+                            onClick={(e) => { e.stopPropagation(); setOpen(open === j.id ? null : j.id); }}>{dateTime(j.created_at)}</button>
+                        </td>
                         <td className="whitespace-nowrap">{KIND[j.kind] ?? j.kind}{j.attempts > 1 && <span className="ml-1 text-xs text-muted">×{j.attempts}</span>}</td>
                         <td className="whitespace-nowrap"><Badge className={JOB_STATUS[j.status]?.cls}>{JOB_STATUS[j.status]?.label ?? j.status}{j.status === "running" && ` ${Math.round(j.progress * 100)} %`}</Badge></td>
                         <td className="max-w-[200px] truncate text-ink2">{j.owner_email ?? "système"}</td>
@@ -192,14 +195,17 @@ export function AdminErrorsPage() {
       <div className="card">
         <div className="p-3"><input className="input max-w-sm" placeholder="Référence, message ou chemin…" value={q} onChange={(e) => { setQ(e.target.value); setPage(1); }} aria-label="Rechercher une erreur" /></div>
         {r.isLoading ? <Loading /> : r.data!.items.length === 0 ? <p className="px-6 py-12 text-center text-sm text-muted">Aucune erreur enregistrée. 🎉</p> : (
-          <div className="overflow-x-auto px-2 pb-3">
+          <div tabIndex={0} className="overflow-x-auto px-2 pb-3">
             <table className="table-base">
               <thead><tr><th>Date</th><th>Source</th><th>Référence</th><th>Erreur</th><th>Chemin</th></tr></thead>
               <tbody>
                 {r.data!.items.map((e) => (
                   <Fragment key={e.id}>
-                    <tr className="cursor-pointer hover:bg-raised/50" onClick={() => setOpen(open === e.id ? null : e.id)} aria-expanded={open === e.id}>
-                      <td className="num whitespace-nowrap text-ink2">{dateTime(e.occurred_at)}</td>
+                    <tr className="cursor-pointer hover:bg-raised/50" onClick={() => setOpen(open === e.id ? null : e.id)}>
+                      <td className="num whitespace-nowrap text-ink2">
+                        <button type="button" className="text-left hover:text-ink" aria-expanded={open === e.id} aria-label={`Trace de l'erreur du ${dateTime(e.occurred_at)}`}
+                          onClick={(ev) => { ev.stopPropagation(); setOpen(open === e.id ? null : e.id); }}>{dateTime(e.occurred_at)}</button>
+                      </td>
                       <td><Badge>{e.source}</Badge></td>
                       <td className="num text-xs">{e.request_id}</td>
                       <td className="max-w-[420px]"><div className="font-medium text-neg">{e.error_type}</div><div className="truncate text-xs text-ink2">{e.message}</div></td>
@@ -283,7 +289,7 @@ export function AdminProvidersPage() {
         <DataTable rows={d.instruments} columns={cols} rowKey={(i) => i.symbol} storageKey="admin-instruments" csvName="my2cents-instruments" search={(i) => `${i.symbol} ${i.name}`} />
       </Card>
       <Card title="Dernières synchronisations" className="mt-6" pad={false}>
-        <div className="overflow-x-auto px-3 pb-3">
+        <div tabIndex={0} className="overflow-x-auto px-3 pb-3">
           <table className="table-base">
             <thead><tr><th>Début</th><th>Symbole</th><th>Statut</th><th className="text-right">Barres</th><th>Période</th><th>Erreur</th></tr></thead>
             <tbody>{d.syncs.map((s) => (

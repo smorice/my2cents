@@ -175,9 +175,13 @@ def providers(_: User = Depends(require(Perm.SYSTEM_READ)), db: Session = Depend
 
 @router.post("/admin/market/sync", status_code=202)
 def trigger_sync(request: Request, symbols: list[str] | None = None, admin: User = Depends(require(Perm.MARKET_REFRESH)), db: Session = Depends(get_db)):
+    if symbols is not None:
+        symbols = [x.strip().upper() for x in symbols][:200]
+        if any(not x or len(x) > 24 or not all(c.isalnum() or c in ".^-=" for c in x) for x in symbols):
+            raise HTTPException(422, "Symbole invalide.")
     if db.scalar(select(Job.id).where(Job.kind == "market_sync", Job.status.in_(["queued", "running"])).limit(1)):
         raise HTTPException(409, "Une synchronisation est déjà en cours.")
-    job = jobs.enqueue(db, "market_sync", {"symbols": [s.upper() for s in symbols] if symbols else None}, owner_id=admin.id,
+    job = jobs.enqueue(db, "market_sync", {"symbols": symbols or None}, owner_id=admin.id,
                        message="Synchronisation demandée")
     audit.record(db, "market.sync_all", actor=admin, request=request, resource_type="job", resource_id=job.id, details={"symbols": symbols})
     db.commit()

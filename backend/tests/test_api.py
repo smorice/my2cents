@@ -20,7 +20,7 @@ os.environ.setdefault("MY2CENTS_STATIC_DIR", "/nonexistent")
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
-from app import jobs, migrations, worker  # noqa: E402
+from app import jobs, migrations, ratelimit, runner, worker  # noqa: E402
 from app.db import Base, SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import AppError, Backtest, BacktestDecision, Instrument, Job, PriceBar, utcnow  # noqa: E402
@@ -35,6 +35,7 @@ def client():
     with engine.begin() as c:
         c.execute(text("DROP SCHEMA public CASCADE; CREATE SCHEMA public;"))
     stop = threading.Event()
+    ratelimit.LIMITS.update(read=100_000, write=100_000)  # polling loops below would trip the real limits
     with TestClient(app) as tc:
         _seed_prices()
         worker.start(stop, concurrency=2, idle=0.05, refresh=False)
@@ -332,6 +333,10 @@ def test_admin_system_views_and_permissions(client):
     prov = client.get(f"{API}/admin/providers").json()
     assert prov["providers"][0]["name"] == "yahoo" and prov["instruments"]
     assert any(e["action"] == "job.retry" for e in client.get(f"{API}/audit", params={"action": "job."}).json()["items"])
+    assert client.post(f"{API}/admin/market/sync", headers=H, json=["BAD SYMBOL;"]).status_code == 422
+    r = client.post(f"{API}/admin/market/sync", headers=H, json=["AAA.PA"])
+    assert r.status_code == 202 and r.json()["payload"]["symbols"] == ["AAA.PA"]
+    assert any(e["action"] == "market.sync_all" for e in client.get(f"{API}/audit", params={"action": "market."}).json()["items"])
 
 
 def test_public_showcase_needs_no_login(client):
@@ -339,3 +344,41 @@ def test_public_showcase_needs_no_login(client):
     r = client.get(f"{API}/public/showcase")
     # The test database has no CW8.PA history: the endpoint says so instead of inventing data.
     assert r.status_code == 503
+
+
+def test_rate_limit_returns_429_with_retry_after(client):
+    saved = dict(ratelimit.LIMITS)
+    ratelimit.reset()
+    ratelimit.LIMITS.update(read=5, write=2)
+    try:
+        codes = [client.get(f"{API}/auth/config").status_code for _ in range(7)]
+        assert codes[:5] == [200] * 5 and codes[5] == 429
+        r = client.get(f"{API}/auth/config")
+        assert int(r.headers["retry-after"]) >= 1 and "patientez" in r.json()["detail"]
+        assert client.get(f"{API}/health").status_code == 200  # never limited
+    finally:
+        ratelimit.LIMITS.update(saved)
+        ratelimit.reset()
+
+
+def test_active_backtest_quota(client, monkeypatch):
+    _login(client, "carol@example.com")
+    sid = next(s["id"] for s in client.get(f"{API}/strategies").json() if s["is_template"])
+    monkeypatch.setattr(runner, "MAX_ACTIVE_PER_USER", 0)
+    r = client.post(f"{API}/backtests", headers=H, json={"strategy_id": sid, "start": "2020-01-01", "end": "2021-01-01"})
+    assert r.status_code == 429 and "simulations en cours" in r.json()["detail"]
+
+
+def test_other_users_cannot_reach_any_backtest_output(client):
+    _login(client, "alice@example.com")
+    bid = next(b["id"] for b in client.get(f"{API}/backtests", params={"status": "done"}).json()["items"])
+    job_id = client.get(f"{API}/backtests/{bid}").json()["job_id"]
+    sym = client.get(f"{API}/backtests/{bid}/transactions").json()["items"][0]["symbol"]
+    _login(client, "carol@example.com")
+    for path in ("", "/decisions", "/transactions", "/timeline", "/analytics", "/window", f"/assets/{sym}", "/export/trades.csv"):
+        assert client.get(f"{API}/backtests/{bid}{path}").status_code == 404, path
+    assert client.get(f"{API}/jobs/{job_id}").status_code == 404
+    assert client.get(f"{API}/transactions", params={"backtest_id": bid}).json()["total"] == 0
+    assert client.get(f"{API}/backtests/compare", params={"ids": bid}).status_code == 404
+    assert client.delete(f"{API}/backtests/{bid}", headers=H).status_code in (403, 404)
+    assert client.get(f"{API}/dashboard/performance", params={"focus": bid}).json()["items"] == []
