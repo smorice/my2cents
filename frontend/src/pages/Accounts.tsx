@@ -4,11 +4,12 @@ import { Bell, BellOff, Check, ChevronDown, ClipboardList, Pencil, Play, Plus, S
 import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { SignalCard } from "../components/Explain";
+import { SymbolPicker } from "../components/SymbolPicker";
 import { Badge, Card, Empty, ErrorNote, Field, Loading, Modal, Notice, PageHeader, Spinner, Stat, Tabs, Toggle, toast } from "../components/ui";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { date, dateTime, eur, num, pct, spct, tone } from "../lib/format";
-import { useInstruments, useStrategies } from "../lib/queries";
+import { useStrategies } from "../lib/queries";
 import type { Account, AccountMovement, JobInfo, Proposal, ProposalRow, ProposedOrder } from "../lib/types";
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -408,12 +409,11 @@ function PositionsCard({ account, write, onEdit, onMovement }: { account: Accoun
   );
 }
 
-interface Row { symbol: string; qty: string; avg_cost: string; locked: boolean }
+interface Row { symbol: string; name?: string; qty: string; avg_cost: string; locked: boolean }
 
 function PositionsEditor({ account, onSaved }: { account: Account; onSaved: (a: Account) => void }) {
-  const instruments = useInstruments();
   const [rows, setRows] = useState<Row[]>(() => {
-    const r = (account.positions ?? []).map((p) => ({ symbol: p.symbol, qty: String(p.qty), avg_cost: String(p.avg_cost || ""), locked: p.locked }));
+    const r = (account.positions ?? []).map((p) => ({ symbol: p.symbol, name: p.name, qty: String(p.qty), avg_cost: p.avg_cost ? String(Number(p.avg_cost.toFixed(4))) : "", locked: p.locked }));
     return r.length ? r : [{ symbol: "", qty: "", avg_cost: "", locked: false }];
   });
   const [cash, setCash] = useState(String(account.cash));
@@ -434,20 +434,20 @@ function PositionsEditor({ account, onSaved }: { account: Account; onSaved: (a: 
         Recopiez les lignes de votre compte chez le courtier. Le prix de revient sert au calcul des plus-values et des stop-loss.
         Cochez « hors stratégie » pour une ligne que la stratégie ne doit jamais vendre ni compter.
       </p>
-      <datalist id="m2c-symbols">{instruments.data?.map((i) => <option key={i.symbol} value={i.symbol}>{i.name}</option>)}</datalist>
       <div className="space-y-2">
         <div className="hidden grid-cols-[1.4fr_1fr_1fr_auto_auto] gap-2 text-xs font-medium text-muted sm:grid">
-          <span>Symbole (ex. CW8.PA)</span><span>Quantité</span><span>Prix de revient unitaire (€)</span><span>Hors stratégie</span><span />
+          <span>Titre (nom ou code)</span><span>Quantité</span><span>Prix de revient unitaire (€)</span><span>Hors stratégie</span><span />
         </div>
         {rows.map((r, i) => (
           <div key={i} className="grid grid-cols-2 gap-2 rounded-xl border border-line p-2 sm:grid-cols-[1.4fr_1fr_1fr_auto_auto] sm:border-0 sm:p-0">
-            <input className="input col-span-2 sm:col-span-1" list="m2c-symbols" aria-label="Symbole" placeholder="Symbole" value={r.symbol} onChange={(e) => upd(i, { symbol: e.target.value })} />
+            <SymbolPicker className="col-span-2 sm:col-span-1" label="Titre" placeholder="Nom ou code" value={r.symbol} onChange={(sym, name) => upd(i, { symbol: sym, name })} />
             <input className="input num" type="number" min={0} step="any" aria-label="Quantité" placeholder="Quantité" value={r.qty} onChange={(e) => upd(i, { qty: e.target.value })} />
             <input className="input num" type="number" min={0} step="any" aria-label="Prix de revient unitaire" placeholder="PRU" value={r.avg_cost} onChange={(e) => upd(i, { avg_cost: e.target.value })} />
             <label className="flex items-center gap-2 text-sm text-ink2 sm:justify-center">
               <input type="checkbox" checked={r.locked} onChange={(e) => upd(i, { locked: e.target.checked })} /> <span className="sm:sr-only">Hors stratégie</span>
             </label>
             <button type="button" className="btn-ghost px-2" aria-label="Retirer la ligne" onClick={() => setRows(rows.filter((_, k) => k !== i))}><Trash2 size={15} /></button>
+            {r.name && r.name !== r.symbol && <p className="col-span-full -mt-1 text-xs text-muted sm:hidden">{r.name}</p>}
             {r.symbol && universe.size > 0 && !universe.has(r.symbol.trim().toUpperCase()) && !r.locked && (
               <p className="col-span-full text-xs text-warn">Ce titre n'est pas dans l'univers de la stratégie : elle proposera de le vendre (cochez « hors stratégie » pour le garder).</p>
             )}
@@ -490,7 +490,7 @@ function MovementForm({ account, onSaved }: { account: Account; onSaved: (a: Acc
         <Field label="Date"><input className="input" type="date" required value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} /></Field>
         {trade ? (
           <>
-            <Field label="Symbole"><input className="input" list="m2c-symbols" required value={f.symbol} onChange={(e) => setF({ ...f, symbol: e.target.value })} placeholder="ex. CW8.PA" /></Field>
+            <Field label="Titre"><SymbolPicker label="Titre" value={f.symbol} onChange={(sym) => setF({ ...f, symbol: sym })} /></Field>
             <Field label="Quantité"><input className="input num" type="number" min={0} step="any" required value={f.qty} onChange={(e) => setF({ ...f, qty: e.target.value })} /></Field>
             <Field label="Prix unitaire (€)"><input className="input num" type="number" min={0} step="any" required value={f.price} onChange={(e) => setF({ ...f, price: e.target.value })} /></Field>
             <Field label="Frais (€)"><input className="input num" type="number" min={0} step="0.01" value={f.fees} onChange={(e) => setF({ ...f, fees: e.target.value })} /></Field>

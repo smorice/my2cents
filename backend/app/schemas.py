@@ -314,6 +314,7 @@ class PortfolioPatch(BaseModel):
 
 class InstrumentIn(BaseModel):
     symbol: str = Field(min_length=1, max_length=24)
+    kind: Literal["equity", "etf", "index"] | None = None  # from a search hit; new symbols default to equity
 
 
 # ----------------------------------------------------------------- real accounts

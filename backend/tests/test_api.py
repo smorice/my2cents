@@ -488,3 +488,25 @@ def test_evening_review_is_scheduled_once_per_weekday(client):
     if late.weekday() < 5:
         assert accounts.schedule_evening_review(late)
         assert not accounts.schedule_evening_review(late)
+
+
+def test_instrument_search_by_name(client, monkeypatch):
+    from app.marketdata.providers import PROVIDERS, SearchHit
+    from app.routers import market
+
+    market._SEARCH_CACHE.clear()
+    yahoo = PROVIDERS["yahoo"]
+    monkeypatch.setattr(yahoo, "search", lambda q: [
+        SearchHit("1F1.F", "Figeac Aero S.A.", "equity", "Frankfurt"),
+        SearchHit("FGA.PA", "FIGEAC AERO", "equity", "Paris"),
+    ])
+    _login(client, "alice@example.com")
+    r = client.get(f"{API}/market/search", params={"q": "figeac"}).json()
+    assert [i["symbol"] for i in r["items"]] == ["FGA.PA", "1F1.F"]  # Paris first
+    assert not r["items"][0]["in_catalog"] and r["remote_error"] is None
+    # Local catalogue answers by name too, and survives a provider outage.
+    market._SEARCH_CACHE.clear()
+    monkeypatch.setattr(yahoo, "search", lambda q: (_ for _ in ()).throw(RuntimeError("down")))
+    r = client.get(f"{API}/market/search", params={"q": "test aaa"}).json()
+    assert r["items"][0]["symbol"] == "AAA.PA" and r["items"][0]["in_catalog"] and r["remote_error"]
+    assert client.get(f"{API}/market/search", params={"q": "a"}).json()["items"] == []

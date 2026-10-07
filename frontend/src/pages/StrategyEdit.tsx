@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Save, X } from "lucide-react";
+import { Save, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { KindIcon } from "../components/KindIcon";
@@ -7,6 +7,7 @@ import { Card, ErrorNote, Field, Loading, Notice, PageHeader, Toggle, toast } fr
 import { api } from "../lib/api";
 import { FREQ } from "../lib/labels";
 import { useCatalog, useInstruments, useUniverses } from "../lib/queries";
+import { SymbolPicker } from "../components/SymbolPicker";
 import type { Definition, Param, Strategy, StrategyKind } from "../lib/types";
 
 const emptyDef = (k?: StrategyKind): Definition => ({
@@ -20,7 +21,6 @@ const emptyDef = (k?: StrategyKind): Definition => ({
 
 function WeightsEditor({ value, onChange }: { value: Record<string, number>; onChange: (v: Record<string, number>) => void }) {
   const inst = useInstruments();
-  const [sym, setSym] = useState("");
   const total = Object.values(value).reduce((a, b) => a + b, 0);
   return (
     <div className="space-y-2">
@@ -34,10 +34,8 @@ function WeightsEditor({ value, onChange }: { value: Record<string, number>; onC
           <button type="button" className="btn-ghost h-8 px-2" onClick={() => { const n = { ...value }; delete n[s]; onChange(n); }} aria-label="Retirer"><X size={14} /></button>
         </div>
       ))}
-      <div className="flex gap-2">
-        <input className="input" list="instr-list" placeholder="Symbole (ex. CW8.PA)" value={sym} onChange={(e) => setSym(e.target.value.toUpperCase())} />
-        <button type="button" className="btn-outline" disabled={!sym || sym in value} onClick={() => { onChange({ ...value, [sym]: 0 }); setSym(""); }}><Plus size={14} /> Ajouter</button>
-      </div>
+      <SymbolPicker value="" clearOnPick label="Ajouter un titre à l'allocation" placeholder="Ajouter un titre : nom ou code (ex. CW8.PA)"
+        onChange={(s) => { if (!(s in value)) onChange({ ...value, [s]: 0 }); }} />
       <p className={`num text-xs ${total > 100 ? "text-neg" : "text-muted"}`}>Total : {total.toFixed(1).replace(".", ",")} % {total < 100 && `— ${(100 - total).toFixed(1).replace(".", ",")} % resteront en liquidités`}</p>
     </div>
   );
@@ -76,7 +74,6 @@ export function StrategyEditPage() {
   const [description, setDescription] = useState("");
   const [def, setDef] = useState<Definition | null>(null);
   const [note, setNote] = useState("");
-  const [symbolInput, setSymbolInput] = useState("");
 
   const kindSpec = useMemo(() => cat.data?.find((k) => k.kind === kind), [cat.data, kind]);
 
@@ -112,10 +109,8 @@ export function StrategyEditPage() {
 
   const setParam = (k: string, v: unknown) => setDef({ ...def, parameters: { ...def.parameters, [k]: v } });
   const indices = (instruments.data ?? []).filter((i) => i.kind === "index" || i.kind === "etf");
-  const addSymbol = () => {
-    const s = symbolInput.trim().toUpperCase();
-    if (s && !def.universe.symbols.includes(s)) setDef({ ...def, universe: { ...def.universe, symbols: [...def.universe.symbols, s] } });
-    setSymbolInput("");
+  const addSymbol = (s: string) => {
+    if (!def.universe.symbols.includes(s)) setDef({ ...def, universe: { ...def.universe, symbols: [...def.universe.symbols, s] } });
   };
 
   return (
@@ -124,7 +119,6 @@ export function StrategyEditPage() {
         title={isNew ? "Nouvelle stratégie" : "Modifier la stratégie"}
         description={isNew ? "Choisissez une famille de stratégie, puis réglez ses paramètres." : `Les changements de définition créeront la version ${existing.data!.current_version + 1} ; la version ${existing.data!.current_version} reste consultable et rejouable.`}
         actions={<button className="btn-primary" disabled={save.isPending || !name.trim()}><Save size={15} /> Enregistrer</button>} />
-      <datalist id="instr-list">{instruments.data?.map((i) => <option key={i.symbol} value={i.symbol}>{i.name}</option>)}</datalist>
 
       <div className="space-y-6">
         {isNew && (
@@ -168,15 +162,11 @@ export function StrategyEditPage() {
                       {universes.data?.map((u) => <option key={u.key} value={u.key}>{u.label} — {u.symbols.length} actifs</option>)}
                     </select>
                   </Field>
-                  <Field label="Symboles supplémentaires" hint="Tickers Yahoo Finance (ex. ALO.PA). Les nouveaux symboles sont téléchargés au premier backtest.">
-                    <div className="flex gap-2">
-                      <input className="input" list="instr-list" value={symbolInput} onChange={(e) => setSymbolInput(e.target.value.toUpperCase())}
-                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addSymbol(); } }} />
-                      <button type="button" className="btn-outline" onClick={addSymbol}><Plus size={14} /></button>
-                    </div>
+                  <Field label="Titres supplémentaires" hint="Cherchez par nom ou par code : un titre absent du catalogue y est ajouté avec son historique.">
+                    <SymbolPicker value="" clearOnPick label="Ajouter un titre à l'univers" onChange={addSymbol} />
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       {def.universe.symbols.map((s) => (
-                        <span key={s} className="chip">{s}<button type="button" onClick={() => setDef({ ...def, universe: { ...def.universe, symbols: def.universe.symbols.filter((x) => x !== s) } })} aria-label={`Retirer ${s}`}><X size={11} /></button></span>
+                        <span key={s} className="chip" title={instruments.data?.find((i) => i.symbol === s)?.name}>{instruments.data?.find((i) => i.symbol === s)?.name ?? s}<button type="button" onClick={() => setDef({ ...def, universe: { ...def.universe, symbols: def.universe.symbols.filter((x) => x !== s) } })} aria-label={`Retirer ${s}`}><X size={11} /></button></span>
                       ))}
                     </div>
                   </Field>

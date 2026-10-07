@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, RefreshCw, Search } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ValueChart } from "../components/charts";
-import { Badge, Card, ErrorNote, Loading, PageHeader, Segmented, SourceBadge, toast } from "../components/ui";
+import { Badge, Card, ErrorNote, Loading, PageHeader, Segmented, SourceBadge, Spinner, toast } from "../components/ui";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { date, dateTime } from "../lib/format";
@@ -10,6 +10,46 @@ import { useInstruments } from "../lib/queries";
 import type { Instrument } from "../lib/types";
 
 const KIND: Record<string, string> = { equity: "Action", etf: "ETF", index: "Indice" };
+
+interface Hit { symbol: string; name: string; kind: "equity" | "etf" | "index"; exchange: string | null; in_catalog: boolean }
+
+/** Listings found on the markets for the search term, outside the catalogue, with a one-click add. */
+function MarketHits({ term, canAdd, onAdded }: { term: string; canAdd: boolean; onAdded: (symbol: string, name: string) => void }) {
+  const qc = useQueryClient();
+  const [debounced, setDebounced] = useState(term);
+  useEffect(() => { const t = setTimeout(() => setDebounced(term), 350); return () => clearTimeout(t); }, [term]);
+  const q = useQuery({
+    queryKey: ["symbol-search", debounced], staleTime: 5 * 60_000,
+    queryFn: () => api<{ items: Hit[]; remote_error: string | null }>("/market/search", { params: { q: debounced } }),
+  });
+  const add = useMutation({
+    mutationFn: (h: Hit) => api<Instrument>("/market/instruments", { method: "POST", body: { symbol: h.symbol, kind: h.kind } }),
+    onSuccess: (i) => { qc.invalidateQueries({ queryKey: ["instruments"] }); qc.invalidateQueries({ queryKey: ["symbol-search"] }); onAdded(i.symbol, i.name); },
+  });
+  const hits = (q.data?.items ?? []).filter((h) => !h.in_catalog);
+  return (
+    <div className="border-t border-line">
+      <p className="eyebrow px-4 pb-1 pt-3">Sur les marchés</p>
+      {q.isFetching && !hits.length && <p className="flex items-center gap-2 px-4 py-2 text-sm text-muted"><Spinner /> Recherche de « {debounced} »…</p>}
+      {!q.isFetching && !hits.length && !q.data?.remote_error && <p className="px-4 py-2 text-sm text-muted">Rien de plus que le catalogue pour « {debounced} ».</p>}
+      {q.data?.remote_error && <p className="px-4 py-2 text-xs text-warn">{q.data.remote_error}</p>}
+      <ul className="max-h-[300px] overflow-y-auto pb-2">
+        {hits.map((h) => (
+          <li key={h.symbol} className="flex items-center gap-3 px-4 py-2 text-sm">
+            <span className="min-w-0 flex-1"><span className="block truncate font-medium">{h.name}</span>
+              <span className="text-xs text-muted">{h.symbol} · {KIND[h.kind]}{h.exchange ? ` · ${h.exchange}` : ""}</span></span>
+            {canAdd && (
+              <button className="btn-outline h-8 shrink-0 px-2.5 text-xs" disabled={add.isPending} onClick={() => add.mutate(h)}>
+                {add.isPending && add.variables?.symbol === h.symbol ? <Spinner /> : <Plus size={13} />} Ajouter
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {add.error && <div className="px-4 pb-3"><ErrorNote error={add.error} /></div>}
+    </div>
+  );
+}
 
 export function MarketsPage() {
   const q = useInstruments();
@@ -19,14 +59,9 @@ export function MarketsPage() {
   const [kind, setKind] = useState<"all" | "equity" | "etf" | "index">("all");
   const [sel, setSel] = useState<string>("^FCHI");
   const [years, setYears] = useState<"1" | "5" | "10" | "20">("5");
-  const [newSym, setNewSym] = useState("");
   const prices = useQuery({
     queryKey: ["prices", sel, years],
     queryFn: () => api<{ dates: string[]; close: number[] }>(`/market/instruments/${encodeURIComponent(sel)}/prices`, { params: { days: Number(years) * 365 } }),
-  });
-  const add = useMutation({
-    mutationFn: () => api<Instrument>("/market/instruments", { method: "POST", body: { symbol: newSym } }),
-    onSuccess: (i) => { qc.invalidateQueries({ queryKey: ["instruments"] }); setSel(i.symbol); setNewSym(""); toast(`${i.name} ajouté`); },
   });
   const sync = useMutation({
     mutationFn: (s: string) => api<Instrument>(`/market/instruments/${encodeURIComponent(s)}/sync`, { method: "POST" }),
@@ -43,7 +78,7 @@ export function MarketsPage() {
       <div className="grid gap-6 xl:grid-cols-[380px_1fr]">
         <Card pad={false}>
           <div className="space-y-3 p-4">
-            <div className="relative"><Search size={15} className="absolute left-3 top-2.5 text-muted" /><input className="input pl-9" placeholder="Rechercher…" value={filter} onChange={(e) => setFilter(e.target.value)} /></div>
+            <div className="relative"><Search size={15} className="absolute left-3 top-2.5 text-muted" aria-hidden="true" /><input className="input pl-9" aria-label="Rechercher un titre" placeholder="Rechercher un titre (nom ou code)…" value={filter} onChange={(e) => setFilter(e.target.value)} /></div>
             <Segmented size="sm" value={kind} onChange={setKind} options={[{ value: "all", label: "Tout" }, { value: "equity", label: "Actions" }, { value: "etf", label: "ETF" }, { value: "index", label: "Indices" }]} />
           </div>
           <ul className="max-h-[560px] overflow-y-auto border-t border-line">
@@ -56,13 +91,7 @@ export function MarketsPage() {
               </li>
             ))}
           </ul>
-          {can("strategy:create") && (
-            <form className="flex gap-2 border-t border-line p-4" onSubmit={(e) => { e.preventDefault(); add.mutate(); }}>
-              <input className="input" placeholder="Ajouter un ticker Yahoo (ex. ALO.PA)" value={newSym} onChange={(e) => setNewSym(e.target.value.toUpperCase())} />
-              <button className="btn-outline" disabled={!newSym || add.isPending}><Plus size={15} /></button>
-            </form>
-          )}
-          {add.error && <div className="px-4 pb-4"><ErrorNote error={add.error} /></div>}
+          {filter.trim().length >= 2 && <MarketHits term={filter.trim()} canAdd={can("strategy:create")} onAdded={(sym, name) => { setSel(sym); setFilter(""); toast(`${name} ajouté au catalogue`); }} />}
         </Card>
         <Card title={current ? `${current.name}` : sel} subtitle={current && `${current.symbol} · ${current.currency} · historique ${date(current.first_date)} → ${date(current.last_date)} · synchronisé ${dateTime(current.last_synced_at)}`}
           actions={<>

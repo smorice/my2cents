@@ -1,3 +1,4 @@
+import time
 import uuid
 from datetime import date, timedelta
 
@@ -10,7 +11,7 @@ from ..db import get_db
 from ..deps import require
 from ..engine import analytics
 from ..marketdata.catalog import UNIVERSES
-from ..marketdata.providers import PROVIDERS, DataError
+from ..marketdata.providers import DEFAULT_PROVIDER, PROVIDERS, DataError
 from ..marketdata.service import sync_symbol
 from ..models import Backtest, Benchmark, Instrument, Portfolio, PriceBar, Strategy, User
 from ..rbac import Perm
@@ -54,17 +55,64 @@ def instruments(q: str | None = None, kind: str | None = None, _: User = Depends
     return [_inst(i) for i in db.scalars(stmt.order_by(Instrument.kind, Instrument.name)).all()]
 
 
+# Paris first (PEA, euros), then the other euro-area venues; anything else after.
+# Exchange names come localised (the search runs in French).
+_EXCHANGE_RANK = {"Paris": 0, "Amsterdam": 1, "Bruxelles": 1, "Milan": 1, "XETRA": 1, "Madrid": 1, "Lisbonne": 1, "Dublin": 1}
+_SEARCH_CACHE: dict[str, tuple[float, list]] = {}
+_SEARCH_TTL = 600
+
+
+def _remote_search(q: str) -> list:
+    key = q.lower()
+    hit = _SEARCH_CACHE.get(key)
+    if hit and time.monotonic() - hit[0] < _SEARCH_TTL:
+        return hit[1]
+    res = PROVIDERS[DEFAULT_PROVIDER].search(q)
+    if len(_SEARCH_CACHE) > 500:
+        _SEARCH_CACHE.clear()
+    _SEARCH_CACHE[key] = (time.monotonic(), res)
+    return res
+
+
+@router.get("/market/search")
+def search(q: str, _: User = Depends(require(Perm.MARKET_READ)), db: Session = Depends(get_db)):
+    """Find instruments by name or ticker: the local catalogue, then the data provider's listings.
+    A provider hit is added to the catalogue (and its history downloaded) when picked."""
+    q = q.strip()[:60]
+    if len(q) < 2:
+        return {"items": [], "remote_error": None}
+    like = f"%{q.lower()}%"
+    local = db.scalars(select(Instrument).where(or_(func.lower(Instrument.symbol).like(like), func.lower(Instrument.name).like(like)))
+                       .order_by(Instrument.name).limit(8)).all()
+    items = [{"symbol": i.symbol, "name": i.name, "kind": i.kind, "exchange": None, "in_catalog": True} for i in local]
+    seen = {i.symbol for i in local}
+    remote_error = None
+    try:
+        hits = sorted(_remote_search(q), key=lambda h: _EXCHANGE_RANK.get(h.exchange, 2))
+    except Exception:  # noqa: BLE001 - provider down or rate limited: the catalogue still answers
+        hits, remote_error = [], "Recherche élargie indisponible pour le moment : seuls les titres déjà au catalogue sont proposés."
+    in_db = set(db.scalars(select(Instrument.symbol).where(Instrument.symbol.in_([h.symbol for h in hits]))).all()) if hits else set()
+    for h in hits:
+        if h.symbol not in seen and len(items) < 15:
+            seen.add(h.symbol)
+            items.append({"symbol": h.symbol, "name": h.name, "kind": h.kind, "exchange": h.exchange, "in_catalog": h.symbol in in_db})
+    return {"items": items, "remote_error": remote_error}
+
+
 @router.post("/market/instruments", status_code=201)
 def add_instrument(body: InstrumentIn, request: Request, user: User = Depends(require(Perm.STRATEGY_CREATE)), db: Session = Depends(get_db)):
     symbol = body.symbol.strip().upper()
     if not all(c.isalnum() or c in ".^-=" for c in symbol):
         raise HTTPException(422, "Symbole invalide")
+    existed = db.get(Instrument, symbol) is not None
     try:
         n = sync_symbol(db, symbol)
     except DataError as exc:
         raise HTTPException(404, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, "Source de données indisponible, réessayez plus tard.") from exc
+    if body.kind and not existed:
+        db.get(Instrument, symbol).kind = body.kind
     audit.record(db, "market.instrument_add", actor=user, request=request, resource_type="instrument", resource_id=symbol, details={"bars": n})
     db.commit()
     return _inst(db.get(Instrument, symbol))

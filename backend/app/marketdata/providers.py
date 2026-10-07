@@ -40,6 +40,17 @@ class FetchResult:
     bars: list[Bar]
 
 
+@dataclass
+class SearchHit:
+    symbol: str
+    name: str
+    kind: str  # equity | etf | index
+    exchange: str
+
+
+SEARCH_KINDS = {"EQUITY": "equity", "ETF": "etf", "INDEX": "index"}
+
+
 class MarketDataProvider(Protocol):
     name: str
     label: str
@@ -47,6 +58,10 @@ class MarketDataProvider(Protocol):
 
     def fetch_daily(self, symbol: str) -> FetchResult:
         """Full daily history for `symbol`, oldest first."""
+        ...
+
+    def search(self, query: str) -> list[SearchHit]:
+        """Instruments matching a name or ticker, in the provider's own symbology."""
         ...
 
 
@@ -89,6 +104,21 @@ class YahooProvider:
                 close=float(c), adj_close=float(a), volume=float(q["volume"][k] or 0),
             ))
         return FetchResult(symbol, meta.get("longName") or meta.get("shortName"), meta.get("currency"), bars)
+
+    def search(self, query: str) -> list[SearchHit]:
+        r = httpx.get(
+            "https://query2.finance.yahoo.com/v1/finance/search",
+            params={"q": query, "quotesCount": 20, "newsCount": 0, "listsCount": 0, "lang": "fr-FR", "region": "FR"},
+            headers={"User-Agent": "Mozilla/5.0 (My2cents research app)"}, timeout=10,
+        )
+        r.raise_for_status()
+        hits = []
+        for x in r.json().get("quotes", []):
+            kind = SEARCH_KINDS.get(x.get("quoteType", ""))
+            if kind and x.get("symbol"):
+                hits.append(SearchHit(x["symbol"], x.get("longname") or x.get("shortname") or x["symbol"], kind,
+                                      x.get("exchDisp") or x.get("exchange") or ""))
+        return hits
 
 
 PROVIDERS: dict[str, MarketDataProvider] = {p.name: p for p in (YahooProvider(),)}
