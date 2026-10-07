@@ -2,10 +2,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, RefreshCw, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ValueChart } from "../components/charts";
-import { Badge, Card, ErrorNote, Loading, PageHeader, Segmented, SourceBadge, Spinner, toast } from "../components/ui";
+import { Badge, Card, ErrorNote, Loading, Notice, PageHeader, Segmented, SourceBadge, Spinner, toast } from "../components/ui";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
-import { date, dateTime } from "../lib/format";
+import { date, dateTime, spct } from "../lib/format";
 import { useInstruments } from "../lib/queries";
 import type { Instrument } from "../lib/types";
 
@@ -61,7 +61,7 @@ export function MarketsPage() {
   const [years, setYears] = useState<"1" | "5" | "10" | "20">("5");
   const prices = useQuery({
     queryKey: ["prices", sel, years],
-    queryFn: () => api<{ dates: string[]; close: number[] }>(`/market/instruments/${encodeURIComponent(sel)}/prices`, { params: { days: Number(years) * 365 } }),
+    queryFn: () => api<{ dates: string[]; close: number[]; anomalies: { date: string; change: number }[] }>(`/market/instruments/${encodeURIComponent(sel)}/prices`, { params: { days: Number(years) * 365 } }),
   });
   const sync = useMutation({
     mutationFn: (s: string) => api<Instrument>(`/market/instruments/${encodeURIComponent(s)}/sync`, { method: "POST" }),
@@ -98,6 +98,13 @@ export function MarketsPage() {
             <Segmented size="sm" value={years} onChange={setYears} options={[{ value: "1", label: "1A" }, { value: "5", label: "5A" }, { value: "10", label: "10A" }, { value: "20", label: "20A" }]} />
             {can("market:refresh") && <button className="btn-ghost h-8 px-2" onClick={() => sync.mutate(sel)} disabled={sync.isPending} title="Rafraîchir"><RefreshCw size={15} className={sync.isPending ? "animate-spin" : ""} /></button>}
           </>}>
+          {!!prices.data?.anomalies.length && (
+            <Notice tone="warn">
+              Données suspectes : {prices.data.anomalies.map((a) => `${spct(a.change)} le ${date(a.date)}`).join(", ")}.
+              Probablement une opération sur titres mal ajustée par la source (regroupement, scission, restructuration).
+              Dans les simulations et les calculs d'ordres, ces jours-là comptent pour 0 %.
+            </Notice>
+          )}
           {prices.isLoading ? <Loading /> : prices.data && prices.data.dates.length > 1 ? (
             <ValueChart dates={prices.data.dates} values={prices.data.close} height={380} label="Cours de clôture" />
           ) : <p className="py-16 text-center text-sm text-muted">Pas encore de données pour ce symbole (chargement automatique en cours ou au premier backtest).</p>}

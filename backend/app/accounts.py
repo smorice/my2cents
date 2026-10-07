@@ -26,6 +26,7 @@ from .engine.live import Holding, LiveConfig, due_mode, propose
 from .engine.strategies.library import build
 from .mailer import mail_enabled, send_mail
 from .marketdata.catalog import UNIVERSES
+from .marketdata.quality import describe, neutralise_jumps
 from .marketdata.service import ensure_fresh, load_panel
 from .models import AccountMovement, Instrument, Job, OrderProposal, PriceBar, ProposedOrder, RealAccount, RealPosition, User, utcnow
 
@@ -87,6 +88,7 @@ def review(db: Session, acc: RealAccount, trigger: str, force_full: bool = False
                             .group_by(PriceBar.symbol)).all())
     anchor = max(lasts.values(), default=date.today())
     close, _ = load_panel(db, symbols + [bench], min(lasts.values(), default=anchor) - lead, anchor)
+    close, _, jumps = neutralise_jumps(close)
     for s, d_ in sorted(lasts.items()):
         if (anchor - d_).days > 5:
             warnings.append(f"Cours de {s} pas à jour (dernier le {d_.strftime('%d/%m/%Y')}) : il est valorisé à ce dernier cours.")
@@ -101,6 +103,8 @@ def review(db: Session, acc: RealAccount, trigger: str, force_full: bool = False
     last_full = pd.Timestamp(acc.last_full_on) if acc.last_full_on else None
     mode = "full" if force_full else due_mode(d["rebalance_frequency"], as_of, last_full)
     names = dict(db.execute(select(Instrument.symbol, Instrument.name).where(Instrument.symbol.in_(symbols + [bench]))).all())
+    # Only corrections inside the strategy's look-back matter for today's signals.
+    warnings += describe([j for j in jumps if j.date >= close.index[-1] - lead], names)
     risk = d.get("risk_model") or {}
     try:
         res = propose(

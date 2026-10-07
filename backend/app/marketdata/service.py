@@ -17,7 +17,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from ..models import Benchmark, Instrument, MarketDataSync, PriceBar, utcnow
-from .catalog import BENCHMARKS, CAC40, ETFS, INDICES
+from .catalog import BENCHMARKS, CAC40, ETFS, INDICES, SBF120_EXTRA
 from .providers import DataError, get_provider
 
 log = logging.getLogger(__name__)
@@ -26,13 +26,15 @@ __all__ = ["DataError", "seed_instruments", "sync_symbol", "ensure_fresh", "load
 
 
 def default_symbols() -> list[str]:
-    return list(INDICES) + list(ETFS) + list(CAC40)
+    return list(INDICES) + list(ETFS) + list(CAC40) + list(SBF120_EXTRA)
 
 
 def seed_instruments(db: Session) -> None:
     rows = []
     for s, (name, sector) in CAC40.items():
-        rows.append(dict(symbol=s, name=name, kind="equity", currency="EUR", sector=sector, universes=["cac40"]))
+        rows.append(dict(symbol=s, name=name, kind="equity", currency="EUR", sector=sector, universes=["cac40", "sbf120"]))
+    for s, (name, sector) in SBF120_EXTRA.items():
+        rows.append(dict(symbol=s, name=name, kind="equity", currency="EUR", sector=sector, universes=["sbf120", "mid60"]))
     for s, name in ETFS.items():
         rows.append(dict(symbol=s, name=name, kind="etf", currency="EUR", sector="ETF", universes=["etf_pea"]))
     for s, (name, cur) in INDICES.items():

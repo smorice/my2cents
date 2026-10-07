@@ -61,6 +61,10 @@ utilisateurs, rôles, journal d'audit.
 Chaque décision simulée porte une explication structurée (mesures, seuils de la règle, verdict) et chaque
 transaction référence la décision qui l'a déclenchée.
 
+## Qualité des données de marché
+
+La source gratuite rate parfois une opération sur titres (restructuration avec dilution massive, regroupement, scission, fusion) : le cours ajusté fait alors un saut d'un jour que personne n'a vécu (Atos +8 528 % le 12/11/2024, Vivendi −78 % le jour de sa scission). `app/marketdata/quality.py` traite tout saut quotidien au-delà de +90 % / −65 % comme une opération non ajustée : l'historique antérieur est remis à l'échelle pour que ce jour compte 0 %, dans les backtests comme dans les calculs d'ordres, et chaque correction est affichée (avertissements du résultat, page Marchés). Les vrais krachs observés sur les grandes et moyennes valeurs parisiennes (Worldline −59 %, MedinCell +78 %) restent sous ces seuils.
+
 ## Comptes réels et ordres à passer
 
 Un compte réel (`/accounts`) décrit ce que l'utilisateur détient vraiment : liquidités, titres (quantité, prix de revient), frais du courtier. Il suit une stratégie, et une revue en déduit les ordres à passer :

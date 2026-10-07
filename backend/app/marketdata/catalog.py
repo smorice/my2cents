@@ -24,6 +24,38 @@ CAC40 = {
     "DG.PA": ("Vinci", "Industrie"),
 }
 
+# The other 79 members of the SBF 120 (CAC Next 20 + CAC Mid 60), composition of late January 2025
+# taken from the published ISIN list and mapped to Yahoo symbols; members delisted since (Neoen) are left out.
+SBF120_EXTRA = {
+    "ADP.PA": ("Aéroports de Paris", "Industrie"), "AF.PA": ("Air France-KLM", "Industrie"), "ALO.PA": ("Alstom", "Industrie"),
+    "ATE.PA": ("Alten", "Technologie"), "AMUN.PA": ("Amundi", "Finance"), "APAM.AS": ("Aperam", "Matériaux"),
+    "ARG.PA": ("Argan", "Immobilier"), "AKE.PA": ("Arkema", "Matériaux"), "ATO.PA": ("Atos", "Technologie"),
+    "AYV.PA": ("Ayvens", "Finance"), "BEN.PA": ("Bénéteau", "Consommation"), "BB.PA": ("Bic", "Consommation de base"),
+    "BIM.PA": ("bioMérieux", "Santé"), "BOL.PA": ("Bolloré", "Industrie"), "CARM.PA": ("Carmila", "Immobilier"),
+    "CLARI.PA": ("Clariane", "Santé"), "COFA.PA": ("Coface", "Finance"), "COV.PA": ("Covivio", "Immobilier"),
+    "AM.PA": ("Dassault Aviation", "Industrie"), "DBG.PA": ("Derichebourg", "Industrie"), "FGR.PA": ("Eiffage", "Industrie"),
+    "ELIOR.PA": ("Elior", "Consommation"), "ELIS.PA": ("Elis", "Industrie"), "EMEIS.PA": ("Emeis", "Santé"),
+    "ERA.PA": ("Eramet", "Matériaux"), "NAE.PA": ("North Atlantic Energies (ex-Esso)", "Énergie"), "RF.PA": ("Eurazeo", "Finance"),
+    "ENX.PA": ("Euronext", "Finance"), "FDJU.PA": ("FDJ United", "Consommation"), "FRVIA.PA": ("Forvia", "Automobile"),
+    "GTT.PA": ("Gaztransport & Technigaz", "Énergie"), "GFC.PA": ("Gecina", "Immobilier"), "GET.PA": ("Getlink", "Industrie"),
+    "ICAD.PA": ("Icade", "Immobilier"), "IDL.PA": ("ID Logistics", "Industrie"), "NK.PA": ("Imerys", "Matériaux"),
+    "ITP.PA": ("Interparfums", "Consommation"), "IPN.PA": ("Ipsen", "Santé"), "IPS.PA": ("Ipsos", "Médias"),
+    "DEC.PA": ("JCDecaux", "Médias"), "LI.PA": ("Klépierre", "Immobilier"), "MAU.PA": ("Maurel & Prom", "Énergie"),
+    "MEDCL.PA": ("MedinCell", "Santé"), "MERY.PA": ("Mercialys", "Immobilier"), "MRN.PA": ("Mersen", "Industrie"),
+    "MMT.PA": ("M6 Métropole Télévision", "Médias"), "NEX.PA": ("Nexans", "Industrie"), "NXI.PA": ("Nexity", "Immobilier"),
+    "OPM.PA": ("OPmobility", "Automobile"), "PLNW.PA": ("Planisware", "Technologie"), "PLX.PA": ("Pluxee", "Industrie"),
+    "RCO.PA": ("Rémy Cointreau", "Consommation de base"), "RXL.PA": ("Rexel", "Industrie"), "RBT.PA": ("Robertet", "Matériaux"),
+    "RUI.PA": ("Rubis", "Énergie"), "SK.PA": ("SEB", "Consommation"), "DIM.PA": ("Sartorius Stedim Biotech", "Santé"),
+    "SCR.PA": ("SCOR", "Finance"), "SESG.PA": ("SES", "Télécoms"), "SW.PA": ("Sodexo", "Consommation"),
+    "SOI.PA": ("Soitec", "Technologie"), "SOLB.BR": ("Solvay", "Matériaux"), "SOP.PA": ("Sopra Steria", "Technologie"),
+    "SPIE.PA": ("SPIE", "Industrie"), "TE.PA": ("Technip Energies", "Énergie"), "TFI.PA": ("TF1", "Médias"),
+    "TRI.PA": ("Trigano", "Consommation"), "UBI.PA": ("Ubisoft", "Technologie"), "FR.PA": ("Valeo", "Automobile"),
+    "VK.PA": ("Vallourec", "Énergie"), "VLA.PA": ("Valneva", "Santé"), "VRLA.PA": ("Verallia", "Matériaux"),
+    "VCT.PA": ("Vicat", "Matériaux"), "VIRP.PA": ("Virbac", "Santé"), "VIRI.PA": ("Viridien", "Énergie"),
+    "VIV.PA": ("Vivendi", "Médias"), "VU.PA": ("VusionGroup", "Technologie"), "MF.PA": ("Wendel", "Finance"),
+    "WLN.PA": ("Worldline", "Technologie"),
+}
+
 ETFS = {
     "CW8.PA": "Amundi MSCI World (EUR)",
     "ESE.PA": "BNP Paribas Easy S&P 500 (EUR)",
@@ -43,6 +75,8 @@ INDICES = {
 
 UNIVERSES = {
     "cac40": {"label": "CAC 40 (composition récente)", "symbols": list(CAC40)},
+    "sbf120": {"label": "SBF 120 (composition de janvier 2025)", "symbols": list(CAC40) + list(SBF120_EXTRA)},
+    "mid60": {"label": "Valeurs moyennes : SBF 120 hors CAC 40", "symbols": list(SBF120_EXTRA)},
     "etf_pea": {"label": "ETF éligibles PEA / européens", "symbols": list(ETFS)},
 }
 

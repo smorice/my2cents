@@ -2,6 +2,7 @@ import time
 import uuid
 from datetime import date, timedelta
 
+import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, defer
@@ -12,6 +13,7 @@ from ..deps import require
 from ..engine import analytics
 from ..marketdata.catalog import UNIVERSES
 from ..marketdata.providers import DEFAULT_PROVIDER, PROVIDERS, DataError
+from ..marketdata.quality import find_jumps
 from ..marketdata.service import sync_symbol
 from ..models import Backtest, Benchmark, Instrument, Portfolio, PriceBar, Strategy, User
 from ..rbac import Perm
@@ -136,7 +138,10 @@ def prices(symbol: str, days: int = 365 * 5, _: User = Depends(require(Perm.MARK
     since = date.today() - timedelta(days=min(days, 365 * 40))
     rows = db.execute(select(PriceBar.date, PriceBar.close, PriceBar.adj_close)
                       .where(PriceBar.symbol == symbol.upper(), PriceBar.date >= since).order_by(PriceBar.date)).all()
-    return {"symbol": symbol.upper(), "dates": [r[0].isoformat() for r in rows], "close": [r[1] for r in rows], "adj_close": [r[2] for r in rows]}
+    adj = pd.Series([r[2] for r in rows], index=pd.to_datetime([r[0] for r in rows]), dtype=float)
+    return {"symbol": symbol.upper(), "dates": [r[0].isoformat() for r in rows], "close": [r[1] for r in rows], "adj_close": [r[2] for r in rows],
+            # Suspect one-day jumps of the adjusted series, neutralised in simulations (see marketdata.quality)
+            "anomalies": [{"date": d.date().isoformat(), "change": x} for d, x in find_jumps(adj)] if rows else []}
 
 
 def _perf(db: Session, symbol: str) -> dict | None:

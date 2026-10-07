@@ -17,6 +17,7 @@ from .engine.backtester import BacktestConfig, Backtester, Contributions, CostMo
 from .engine.strategies.library import build
 from .marketdata.catalog import UNIVERSES
 from .marketdata.providers import get_provider
+from .marketdata.quality import describe, neutralise_jumps
 from .marketdata.service import default_symbols, ensure_fresh, load_panel, sync_symbol
 from .models import Backtest, BacktestDecision, BacktestPosition, BacktestTransaction, Instrument, Job, Strategy, User, utcnow
 from .results import store_outputs, strip_rows
@@ -101,11 +102,16 @@ def _assumptions(cfg: dict, names: dict, bench_kind: str | None, source: str | N
         f"Taux sans risque pour Sharpe / Sortino / alpha : {cfg['risk_free_pct']:g} % par an.",
         "Les liquidités non investies ne sont pas rémunérées.",
     ]
-    if cfg.get("universe_preset") == "cac40":
+    preset = cfg.get("universe_preset")
+    if preset in ("cac40", "sbf120", "mid60"):
+        index = "CAC 40" if preset == "cac40" else "SBF 120"
         out.append(
-            "Biais du survivant : l'univers CAC 40 est la composition récente de l'indice, appliquée à tout "
+            f"Biais du survivant : l'univers {index} est une composition récente de l'indice, appliquée à tout "
             "l'historique. Les sociétés sorties de l'indice ou disparues sont absentes, ce qui flatte les résultats passés."
         )
+    if preset in ("sbf120", "mid60"):
+        out.append("Valeurs moyennes : volumes d'échange plus faibles, l'écart entre prix d'achat et de vente réel peut "
+                   "dépasser le slippage simulé.")
     if r.get("max_weight_pct", 100) < 100 or r.get("cash_buffer_pct") or r.get("stop_loss_pct"):
         out.append(f"Contraintes de risque : poids max {r['max_weight_pct']:g} %, réserve de liquidités "
                    f"{r['cash_buffer_pct']:g} %, stop-loss {('−%g %%' % r['stop_loss_pct']) if r['stop_loss_pct'] else 'désactivé'}.")
@@ -138,6 +144,7 @@ def run_backtest_job(job: Job, report: jobs.Reporter) -> None:
         start, end = date.fromisoformat(cfg["start"]), date.fromisoformat(cfg["end"])
         lead = timedelta(days=int(strategy.warmup_days() * 1.5) + 30)
         close, open_ = load_panel(db, symbols + [bench], start - lead, end)
+        close, open_, jumps = neutralise_jumps(close, open_)
         if close.empty or bench not in close.columns:
             raise jobs.UserFacingError(f"Pas de données de marché pour l'indice de référence {bench} sur la période.")
         uni = [s for s in symbols if s in close.columns]
@@ -147,6 +154,7 @@ def run_backtest_job(job: Job, report: jobs.Reporter) -> None:
         if not uni:
             raise jobs.UserFacingError("Aucun actif de l'univers n'a de données sur la période.")
         names = dict(db.execute(select(Instrument.symbol, Instrument.name).where(Instrument.symbol.in_(symbols + [bench]))).all())
+        warnings += describe(jumps, names)
         currencies = set(db.scalars(select(Instrument.currency).where(Instrument.symbol.in_(uni))).all())
         if len(currencies) > 1:
             warnings.append(f"Univers multi-devises ({', '.join(sorted(currencies))}) : aucune conversion de change n'est appliquée.")

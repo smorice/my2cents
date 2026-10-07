@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import clsx from "clsx";
-import { ArrowRight, FlaskConical, Play, Target, Wallet } from "lucide-react";
+import { ArrowRight, ChevronDown, FlaskConical, Play, Target, Wallet } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { PerformanceChart, Sparkline } from "../components/charts";
@@ -43,6 +43,7 @@ function Kpi({ label, value, sub, tone: t, help }: { label: string; value: strin
 function StrategiesPerformance() {
   const [period, setPeriod] = useState<Period>("5Y");
   const [focus, setFocus] = useState<string | null>(null);
+  const [more, setMore] = useState(false);
   const q = useQuery({
     queryKey: ["dashboard-perf", period, focus],
     queryFn: () => api<Perf>("/dashboard/performance", { params: { period, focus } }),
@@ -89,19 +90,27 @@ function StrategiesPerformance() {
         <span className="text-muted">vs {f.benchmark_name}</span>
         <Link to={`/backtests/${f.id}`} className="ml-auto text-xs text-accent hover:underline">Rapport complet</Link>
       </div>
-      <div className="mb-6 grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-5">
+      {/* Same four figures as the comparison: what it would have made, and the worst it went through. */}
+      <div className="mb-3 grid grid-cols-2 gap-2.5 lg:grid-cols-4">
         <Kpi label="Performance totale" value={spct(s.total_return)} tone={tone(s.total_return)} sub={`indice ${spct(b.total_return)}`} />
-        <Kpi label="Annualisée (CAGR)" value={pct(s.cagr)} tone={tone(s.cagr)} sub={`indice ${pct(b.cagr)}`} help={METRIC_HELP.cagr} />
+        <Kpi label="Gain par an" value={pct(s.cagr)} tone={tone(s.cagr)} sub={`indice ${pct(b.cagr)}`} help={METRIC_HELP.cagr} />
+        <Kpi label="Pire baisse" value={pct(s.max_drawdown)} sub={`indice ${pct(b.max_drawdown)}`} help={METRIC_HELP.max_drawdown} />
         <Kpi label="Écart vs indice" value={s.cagr != null && b.cagr != null ? spct(s.cagr - b.cagr) : "—"} tone={tone(s.cagr != null && b.cagr != null ? s.cagr - b.cagr : null)} sub="par an" />
-        <Kpi label="Alpha" value={spct(s.alpha)} tone={tone(s.alpha)} sub={`bêta ${ratio(s.beta)}`} help={METRIC_HELP.alpha} />
-        <Kpi label="Volatilité" value={pct(s.volatility)} sub={`indice ${pct(b.volatility)}`} help={METRIC_HELP.volatility} />
-        <Kpi label="Sharpe" value={ratio(s.sharpe)} sub={`indice ${ratio(b.sharpe)}`} help={METRIC_HELP.sharpe} />
-        <Kpi label="Sortino" value={ratio(s.sortino)} sub={`indice ${ratio(b.sortino)}`} help={METRIC_HELP.sortino} />
-        <Kpi label="Perte maximale" value={pct(s.max_drawdown)} sub={`indice ${pct(b.max_drawdown)}`} help={METRIC_HELP.max_drawdown} />
-        <Kpi label="Calmar" value={ratio(s.calmar)} sub={`indice ${ratio(b.calmar)}`} help={METRIC_HELP.calmar} />
-        <Kpi label="Ventes gagnantes" value={f.closed_trades ? pct(f.win_rate) : "—"} sub={f.closed_trades ? `${f.closed_trades} ventes, tout l'historique` : "aucune vente"}
-          help="Part des ventes réalisées avec une plus-value, sur toute la durée du backtest. Non pertinent pour une stratégie qui ne vend jamais." />
       </div>
+      <button type="button" className="mb-4 inline-flex items-center gap-1 text-xs text-accent hover:underline" aria-expanded={more} onClick={() => setMore(!more)}>
+        {more ? "Masquer les indicateurs de risque" : "Indicateurs de risque (volatilité, Sharpe, alpha…)"} <ChevronDown size={13} className={clsx("transition", more && "rotate-180")} aria-hidden="true" />
+      </button>
+      {more && (
+        <div className="mb-6 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+          <Kpi label="Volatilité" value={pct(s.volatility)} sub={`indice ${pct(b.volatility)}`} help={METRIC_HELP.volatility} />
+          <Kpi label="Sharpe" value={ratio(s.sharpe)} sub={`indice ${ratio(b.sharpe)}`} help={METRIC_HELP.sharpe} />
+          <Kpi label="Sortino" value={ratio(s.sortino)} sub={`indice ${ratio(b.sortino)}`} help={METRIC_HELP.sortino} />
+          <Kpi label="Alpha" value={spct(s.alpha)} tone={tone(s.alpha)} sub={`bêta ${ratio(s.beta)}`} help={METRIC_HELP.alpha} />
+          <Kpi label="Calmar" value={ratio(s.calmar)} sub={`indice ${ratio(b.calmar)}`} help={METRIC_HELP.calmar} />
+          <Kpi label="Ventes gagnantes" value={f.closed_trades ? pct(f.win_rate) : "—"} sub={f.closed_trades ? `${f.closed_trades} ventes, tout l'historique` : "aucune vente"}
+            help="Part des ventes réalisées avec une plus-value, sur toute la durée du backtest. Non pertinent pour une stratégie qui ne vend jamais." />
+        </div>
+      )}
       <PerformanceChart series={series} focus={f.id} />
     </section>
   );
